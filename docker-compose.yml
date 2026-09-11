@@ -1,0 +1,47 @@
+services:
+  neo4j:
+    image: neo4j:5-community
+    container_name: cso-neo4j
+    environment:
+      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD}
+      - NEO4J_PLUGINS=["apoc"]
+    ports:
+      - "7474:7474"  # browser UI
+      - "7687:7687"  # bolt protocol
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      test: ["CMD", "cypher-shell", "-u", "neo4j",
+             "-p", "${NEO4J_PASSWORD}", "RETURN 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  api:
+    build: .
+    container_name: cso-api
+    ports:
+      - "8001:8001"
+    environment:
+      # Docker's internal DNS resolves the "neo4j" service name — this
+      # replaces the Aura neo4j+s://...databases.neo4j.io URI. See
+      # models/graph/neo4j_client.py: GraphDatabase.driver() branches on
+      # the URI scheme itself, so bolt:// vs neo4j+s:// needed no code
+      # change, only this env var.
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USERNAME=neo4j
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    volumes:
+      - ./outputs:/app/outputs  # persist/allow updates to precomputed
+                                  # weights and parquet data without
+                                  # rebuilding the image
+
+volumes:
+  neo4j_data:
+  neo4j_logs:

@@ -1,0 +1,34 @@
+# Secrets — never bake into an image layer
+.env
+.env.example
+
+# VCS / local tooling
+.git
+.gitignore
+__pycache__/
+*.pyc
+.DS_Store
+venv/
+
+# Frontend — not part of the backend image
+app/node_modules/
+app/dist/
+
+# Raw data: data/* is preprocessing INPUT only. The live API/ranker/scorer
+# path reads outputs/parquet/*.parquet (already preprocessed) plus two
+# small nomenclature/mutation files — never the raw multi-GB source CSVs.
+# Re-including only what's actually read at request time keeps the image
+# ~4.3GB smaller (excludes data/gene expression/ 2.9GB, data/crispr/ 833MB,
+# data/gene properties/ 529MB, data/member4/ 17MB, data/nongene expression/
+# 11MB). If a script under scripts/preprocessing/ needs to run INSIDE the
+# container, remove this block first.
+data/*
+!data/nomenclature/
+!data/member3/
+
+# Misc project clutter not needed at runtime
+report/
+figures/
+docs/
+website/
+*.md
