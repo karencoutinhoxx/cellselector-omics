@@ -32,6 +32,15 @@ VALIDATION_SET = {
     "BRCA2": ["CAPAN-1", "CFPAC-1"],
     "RB1":   ["WERI-Rb-1", "Y79"],
 
+    # Loss-of-function tumour suppressors — added 2026-09-11, each verified to
+    # carry a truncating/splice pathogenic variant in our ingested DepMap
+    # mutation data (see the mutation-scorer verification for this expansion).
+    "APC":   ["SW480"],       # APC p.Q1338Ter, pathogenic, high impact
+    "VHL":   ["786-O"],       # VHL p.G104AfsTer55, high impact
+    "MLH1":  ["HCT116"],      # MLH1 p.S252Ter — HCT116 is dual-use (TP53-WT + MLH1-deficient)
+    "PTEN":  ["U-87 MG"],     # PTEN splice c.209+1G>T — dual-use (also IDH1's target)
+    "MSH2":  ["HEC-59"],      # MSH2 p.R482SfsTer7, pathogenic, high impact
+
     # Oncogenes
     "KRAS":  ["SW620", "CALU-1", "NCI-H441"],
     "BRAF":  ["A375", "SK-MEL-28", "COLO 205"],

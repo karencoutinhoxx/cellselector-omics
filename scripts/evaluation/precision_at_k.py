@@ -2,127 +2,95 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-import numpy as np
 
-from models.classical.scorer import classify_gene, load_mappings
-from models.classical.weights_learned import (
-    VALIDATION_SET,
-    _build_name_to_cvcl,
-    _precompute_scores,
-    optimise_weights_by_class,
-)
+from models.classical.ranker import rank
+from models.classical.scorer import classify_gene
+from models.classical.weights_learned import VALIDATION_SET, _build_name_to_cvcl
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Precision@k, split by gene class, as a quick supplementary diagnostic to
-# MRR — a hit anywhere in the top-k counts equally whether it's rank 1 or
-# rank k, which MRR doesn't show directly.
+# Precision@k: does the correct answer appear anywhere in a realistic
+# shortlist (top 1 / 5 / 10 / 20)? A binary per gene — 1 if any known-correct
+# cell line is in the top k, else 0 — averaged within each gene class.
 #
-# Weights here are fit ONCE on all 25 genes (in-sample), same methodology
-# as Config C (per-class + grid-search pathway) in cross_validated_evaluation.py
-# and full_evaluation.py — NOT leave-one-out. That's a deliberate choice for
-# a "quick script": refitting per-fold per-k (3 k values x 25 folds) would
-# just re-run the ~expensive LOO-CV loop three times over for no benefit,
-# since precision@k and RR share the same ranking. Precision@k numbers below
-# are therefore in-sample and should not be quoted alongside the LOO-CV MRR
-# figures as if they were computed the same way.
+# Uses the PRODUCTION rank() pipeline (per-class weights, mutation@0.80 for
+# LOF, etc.), scored in-sample on the 30-gene validation set. This is a
+# more intuitive framing than MRR for a results summary; it is NOT a
+# cross-validated number and should not be compared like-for-like with the
+# LOO-CV MRR figures.
+#
+# Efficiency note: rank() is called ONCE per gene at k = max(K_VALUES) and
+# the result sliced for each k, rather than re-ranking per k (each rank()
+# call re-scores every candidate + hits Neo4j for pathway activity).
 # ─────────────────────────────────────────────────────────────────────────────
 
-K_VALUES = [5, 10, 20]
+K_VALUES = [1, 5, 10, 20]
 
 
-def precision_at_k(df, known_cvcls, k):
-    """
-    1 if any known correct cell line appears in the top-k by final_score,
-    else 0. cellosaurus_id is the DataFrame's index (see
-    weights_learned._precompute_scores' .set_index), not a column —
-    reset_index puts it back as one before we can read it per-row.
-    """
-    df_sorted = df.sort_values("final_score", ascending=False).reset_index()
-    top_k = df_sorted.head(k)
-    return 1 if any(c in known_cvcls for c in top_k["cellosaurus_id"]) else 0
+def precision_at_k(gene: str, known_cvcls: set, k: int) -> int:
+    """1 if any known-correct cell line is in this gene's top-k, else 0."""
+    r = rank(gene, top_n=k)
+    if r is None or len(r) == 0:
+        return 0
+    return 1 if any(c in known_cvcls for c in r["cellosaurus_id"]) else 0
 
 
-def run_precision_at_k():
-    print("Fitting per-class weights (in-sample, all 25 genes)...")
-    class_weights = optimise_weights_by_class(VALIDATION_SET, include_pathway=True)
-    # loss_of_function has too few dedicated genes to fit its own weights
-    # (see optimise_weights_by_class's docstring) — fall back to
-    # tissue_specific's weights for scoring those genes, same convention
-    # used elsewhere in this codebase.
-    if class_weights["loss_of_function"] is None:
-        class_weights["loss_of_function"] = class_weights["tissue_specific"]
+def run_precision_evaluation():
+    name_to_cvcl = _build_name_to_cvcl()  # keys are lowercased
+    ks = K_VALUES
+    kmax = max(ks)
 
-    hpa, ach, gsm = load_mappings()
-    scores_cache = _precompute_scores(VALIDATION_SET, hpa, ach, gsm)
-    name_to_cvcl = _build_name_to_cvcl()
+    results_by_class: dict[str, dict[int, list[int]]] = {}
+    per_gene: dict[str, dict[int, int]] = {}
 
-    all_genes = list(VALIDATION_SET.keys())
-    gene_classes = {g: classify_gene(g) for g in all_genes}
-
-    def known_cvcls_for(gene):
-        s = set()
-        for name in VALIDATION_SET[gene]:
-            cvcl = name_to_cvcl.get(name.lower())
-            if cvcl:
-                s.add(cvcl)
-        return s
-
-    results = {g: {} for g in all_genes}
-    for gene in all_genes:
-        if gene not in scores_cache or scores_cache[gene] is None:
-            for k in K_VALUES:
-                results[gene][k] = 0
+    for gene in VALIDATION_SET:
+        known = {
+            name_to_cvcl[n.lower()]
+            for n in VALIDATION_SET[gene]
+            if n.lower() in name_to_cvcl
+        }
+        if not known:
+            print(f"  [skip] {gene}: no validation cell line resolves")
             continue
 
-        weights = class_weights[gene_classes[gene]]
-        df = scores_cache[gene].copy()
-        df["final_score"] = (
-            weights["rna"]     * df["rna_score"]
-            + weights["protein"] * df["protein_score"]
-            + weights["quality"] * df["quality_score"]
-            + weights["context"] * df["context_score"]
-            + weights.get("pathway", 0.0) * df.get("pathway_activity_score", 0.0)
-            + df["geo_confirmation"]
-        ).clip(0.0, 1.0)
+        r = rank(gene, top_n=kmax)
+        ordered = list(r["cellosaurus_id"]) if r is not None and len(r) else []
 
-        known = known_cvcls_for(gene)
-        for k in K_VALUES:
-            results[gene][k] = precision_at_k(df, known, k) if known else 0
+        gene_class = classify_gene(gene)
+        results_by_class.setdefault(gene_class, {k: [] for k in ks})
+        per_gene[gene] = {}
+        for k in ks:
+            hit = 1 if any(c in known for c in ordered[:k]) else 0
+            results_by_class[gene_class][k].append(hit)
+            per_gene[gene][k] = hit
 
-    # ── Per-gene table ────────────────────────────────────────────────────
-    print("\n" + "=" * 60)
-    print("PRECISION@K BY GENE")
-    print("=" * 60)
-    header = f"  {'Gene':10s} {'Class':18s} " + "".join(f"P@{k:<6d}" for k in K_VALUES)
-    print(header)
-    for gene in all_genes:
-        row = f"  {gene:10s} {gene_classes[gene]:18s} "
-        row += "".join(f"{results[gene][k]:<8d}" for k in K_VALUES)
-        print(row)
+    # ── per-gene table ────────────────────────────────────────────────────
+    print("\nPer-gene hit@k (1 = a known line is in the top k):")
+    print(f"  {'Gene':10s} {'Class':18s} " + " ".join(f"@{k:<3d}" for k in ks))
+    for gene, hits in per_gene.items():
+        print(f"  {gene:10s} {classify_gene(gene):18s} "
+              + " ".join(f"{hits[k]:<4d}" for k in ks))
 
-    # ── Split by class ────────────────────────────────────────────────────
-    print("\n" + "=" * 60)
-    print("PRECISION@K BY GENE CLASS (mean over genes in class)")
-    print("=" * 60)
-    for cls in ["tissue_specific", "ubiquitous", "loss_of_function"]:
-        genes_in_cls = [g for g in all_genes if gene_classes[g] == cls]
-        if not genes_in_cls:
+    # ── by class ──────────────────────────────────────────────────────────
+    print("\nPrecision@k by gene class (production scoring, in-sample, 30-gene set):")
+    print(f"  {'Class':20s} {'n':>3s}  " + "  ".join(f"P@{k:<4d}" for k in ks))
+    overall = {k: [] for k in ks}
+    for cls in ("tissue_specific", "loss_of_function", "ubiquitous"):
+        data = results_by_class.get(cls)
+        if not data:
             continue
-        print(f"\n  {cls}  (n={len(genes_in_cls)} genes)")
-        for k in K_VALUES:
-            vals = [results[g][k] for g in genes_in_cls]
-            print(f"    P@{k:<3d}: {np.mean(vals):.3f}  ({sum(vals)}/{len(vals)} genes hit)")
+        n = len(data[ks[0]])
+        cells = []
+        for k in ks:
+            p = sum(data[k]) / n
+            cells.append(f"{p:.3f}")
+            overall[k].extend(data[k])
+        print(f"  {cls:20s} {n:>3d}  " + "  ".join(f"{c:>6s}" for c in cells))
 
-    # ── Overall ───────────────────────────────────────────────────────────
-    print("\n" + "=" * 60)
-    print("PRECISION@K OVERALL (all 25 genes)")
-    print("=" * 60)
-    for k in K_VALUES:
-        vals = [results[g][k] for g in all_genes]
-        print(f"  P@{k:<3d}: {np.mean(vals):.3f}  ({sum(vals)}/{len(vals)} genes hit)")
-
-    return results
+    print("\nOverall:")
+    for k in ks:
+        p = sum(overall[k]) / len(overall[k])
+        print(f"  P@{k:<3d}: {p:.3f}   ({sum(overall[k])}/{len(overall[k])} genes)")
 
 
 if __name__ == "__main__":
-    run_precision_at_k()
+    run_precision_evaluation()
