@@ -8,6 +8,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from config import CELL_LINE_LOOKUP
 from models.classical.pathway_scorer import score_pathway_activity
 from models.classical.mutation_scorer import score_mutation_impact
+from models.classical.copy_number_scorer import (
+    AMPLIFICATION_DRIVEN_GENES,
+    apply_amplification_copy_number_weight,
+    score_copy_number,
+)
 from models.classical.scorer import (
     FIXED_WEIGHTS,
     _level_label_with_percentile,
@@ -22,7 +27,14 @@ from models.classical.scorer import (
 )
 
 # Re-export for external consumers (evaluate, weights_learned, etc.)
-__all__ = ["FIXED_WEIGHTS", "rank", "explain"]
+__all__ = ["FIXED_WEIGHTS", "rank", "explain", "AMPLIFICATION_DRIVEN_GENES"]
+
+# AMPLIFICATION_DRIVEN_GENES, AMPLIFICATION_COPY_NUMBER_WEIGHT, and
+# apply_amplification_copy_number_weight() now live in copy_number_scorer.py
+# (imported above) — single source of truth shared with weights_learned.py's
+# _precompute_scores and cross_validated_evaluation.py's Config C, which
+# each need the same gene set / weight / rescale construction and previously
+# didn't know about it at all (see copy_number_scorer.py's comment).
 
 _CACHED_LEARNED_WEIGHTS_BY_CLASS: dict | None = None
 
@@ -196,6 +208,17 @@ def rank(
         else:
             weights = FIXED_WEIGHTS
 
+    # Gated on the key, not on whether `weights` came from the block above —
+    # eval scripts (full_evaluation.py, cross_validated_evaluation.py, ...)
+    # build a per-class weights dict externally and always pass it in
+    # explicitly (never weights=None), so gating this on "weights is None"
+    # would make it fire for the production API path but silently never for
+    # the eval scripts. A caller that already set "copy_number" explicitly
+    # (e.g. the grid search that found 0.30) is respected as-is, not
+    # re-overridden — this only fills it in when absent.
+    if gene in AMPLIFICATION_DRIVEN_GENES and "copy_number" not in weights:
+        weights = apply_amplification_copy_number_weight(weights)
+
     hpa_to_cvcl, ach_to_cvcl, gsm_to_cvcl = load_mappings()
 
     rna_df     = score_rna_expression(gene, hpa_to_cvcl, gsm_to_cvcl,
@@ -308,6 +331,26 @@ def rank(
         result["mutation_impact_score"] = 0.0
         result["mutation_detail"] = ""
 
+    # ── Copy-number amplification (PRIMARY signal for amplification-driven
+    # genes) ──────────────────────────────────────────────────────────────
+    # Opt-in per gene (AMPLIFICATION_DRIVEN_GENES), not gene_class-wide —
+    # see models/classical/copy_number_scorer.py. No default weight is
+    # baked in here; a caller must pass an explicit "copy_number" key in
+    # `weights` to activate the branch below (same gating pattern as LOF's
+    # "mutation" key). Until weights_learned.py grows a class/gene for this,
+    # `use_learned_weights=True` callers (i.e. production) never populate
+    # that key, so this is inert in production today.
+    if gene in AMPLIFICATION_DRIVEN_GENES:
+        try:
+            cn_df = score_copy_number(gene)
+            result = result.merge(cn_df, on="cellosaurus_id", how="left")
+            result["copy_number_score"] = result["copy_number_score"].fillna(0.0).astype(float)
+            result["copy_number_detail"] = result["copy_number_detail"].fillna("")
+        except Exception as exc:
+            print(f"[ranker] Copy-number scoring failed: {exc}")
+            result["copy_number_score"] = 0.0
+            result["copy_number_detail"] = ""
+
     if gene_class == "loss_of_function" and "mutation" in weights:
         # Mutation-primary LOF vector {mutation, rna, protein, quality,
         # context} (no pathway) — see weights_learned._apply_lof_mutation_weight.
@@ -331,12 +374,21 @@ def rank(
             0.05 * result["mutation_impact_score"]
             if gene_class == "tissue_specific" else 0.0
         )
+        # Gated on both the gene AND an explicit "copy_number" weights key —
+        # see the AMPLIFICATION_DRIVEN_GENES block above. No default weight;
+        # a caller (e.g. the grid search) must pass one explicitly.
+        copy_number_term = (
+            weights["copy_number"] * result["copy_number_score"]
+            if gene in AMPLIFICATION_DRIVEN_GENES and "copy_number" in weights
+            else 0.0
+        )
         result["final_score"] = (
             weights["rna"]     * result["rna_score"]
             + weights["protein"] * result["protein_score"]
             + weights["quality"] * result["quality_score"]
             + weights["context"] * result["context_score"]
             + weights.get("pathway", 0.0) * result["pathway_activity_score"]
+            + copy_number_term
             + result["geo_confirmation"]   # additive, not weighted
             + mutation_bonus
         )
@@ -398,6 +450,8 @@ def rank(
         "pathway_activity_score", "pathway_genes_expressed", "pathway_genes_total",
         "mutation_impact_score", "mutation_detail",
     ]
+    if gene in AMPLIFICATION_DRIVEN_GENES:
+        out_cols += ["copy_number_score", "copy_number_detail"]
     if exclude_genes:
         out_cols.append("exclusion_warning")
         for g in exclude_genes:

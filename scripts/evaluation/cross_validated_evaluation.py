@@ -7,6 +7,11 @@ import numpy as np
 
 from config import OUTPUTS_DIR
 from models.classical.scorer import classify_gene, load_mappings, rank_sort
+from models.classical.copy_number_scorer import (
+    AMPLIFICATION_COPY_NUMBER_WEIGHT,
+    AMPLIFICATION_DRIVEN_GENES,
+    apply_amplification_copy_number_weight,
+)
 from models.classical.weights_learned import (
     VALIDATION_SET,
     _GRID_SEARCH_PATHWAY_WEIGHTS,
@@ -55,6 +60,7 @@ def _reciprocal_rank_for_gene(
         + weights.get("context", 0.0) * df["context_score"]
         + weights.get("pathway", 0.0) * df.get("pathway_activity_score", 0.0)
         + weights.get("mutation", 0.0) * df.get("mutation_impact_score", 0.0)
+        + weights.get("copy_number", 0.0) * df.get("copy_number_score", 0.0)
         + df["geo_confirmation"]
     ).clip(0.0, 1.0)
 
@@ -144,6 +150,14 @@ def leave_one_out_evaluation():
             if pw > 0:
                 weights["pathway"] = pw
             extra_desc = f"mut={mw:.2f}/path={pw:.2f}"
+        elif hold_out in AMPLIFICATION_DRIVEN_GENES:
+            # Same fixed-constant treatment as production ranker.rank() (see
+            # copy_number_scorer.apply_amplification_copy_number_weight) —
+            # rescales THIS FOLD's refit 4D baseline, not the full-sample one,
+            # so it's a genuine held-out test, not a leak of the held-out
+            # gene's own contribution to the baseline fit.
+            weights = apply_amplification_copy_number_weight(baseline_4d)
+            extra_desc = f"copy_number={AMPLIFICATION_COPY_NUMBER_WEIGHT:.2f}"
         else:
             pw = _GRID_SEARCH_PATHWAY_WEIGHTS.get(hold_out_class, 0.0)
             weights = {k: v * (1 - pw) for k, v in baseline_4d.items()}

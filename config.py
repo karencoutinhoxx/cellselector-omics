@@ -33,6 +33,13 @@ FILES = {
     "ms_ccle":  GENE_EXPR_DIR / "4_Harmonized_MS_CCLE_Gygi_subsetted.csv",
 }
 
+# DepMap 23Q4 gene-level copy number (log2 relative copy ratio), keyed by
+# ModelID (ACH-) — NOT ProfileID (PR-) like the expression/mutation files.
+# Matches the release of OMICS_PROFILES / FILES["depmap"] above (both 23Q4),
+# deliberately NOT the mutations file (24Q4) — see
+# models/classical/copy_number_scorer.py for the resolution chain.
+COPY_NUMBER_FILE = GENE_EXPR_DIR / "OmicsCNGene.csv"
+
 # ── Dataset citations (D1-D5) ─────────────────────────────────────────────────
 # Used consistently across similarity results, agentic justifications, and UI.
 DATASET_CITATIONS: dict[str, dict] = {

@@ -9,6 +9,7 @@ from scipy.optimize import minimize
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from config import CELL_LINE_LOOKUP
 from models.classical.mutation_scorer import score_mutation_impact
+from models.classical.copy_number_scorer import score_copy_number
 from models.classical.pathway_scorer import score_pathway_activity
 from models.classical.scorer import (
     classify_gene,
@@ -174,6 +175,24 @@ def _precompute_scores(
         else:
             result["mutation_impact_score"] = 0.0
         result["mutation_impact_score"] = result["mutation_impact_score"].fillna(0.0)
+
+        # Copy-number amplification — the PRIMARY signal for
+        # AMPLIFICATION_DRIVEN_GENES (MYCN, ERBB2). Precomputed here for the
+        # same "pure arithmetic in the optimiser inner loop" reason as
+        # everything else above. Merged for every gene (not gated on
+        # AMPLIFICATION_DRIVEN_GENES) for the same reason mutation_impact_score
+        # is: score_copy_number() already returns empty for genes with no CN
+        # data, and cross_validated_evaluation.py's LOO-CV folds need this
+        # column present in scores_cache regardless of which gene is held out.
+        cn_df = score_copy_number(gene)
+        if len(cn_df) > 0:
+            result = result.merge(
+                cn_df[["cellosaurus_id", "copy_number_score"]],
+                on="cellosaurus_id", how="left",
+            )
+        else:
+            result["copy_number_score"] = 0.0
+        result["copy_number_score"] = result["copy_number_score"].fillna(0.0)
 
         # Deterministic row order BEFORE any downstream ranking. Every merge
         # above (rna/protein/quality/context/pathway/mutation) can leave rows
