@@ -221,7 +221,10 @@ __marimo__/
 
 # Project data files (keep local, never push)
 data/
-outputs/
+# outputs/* (not outputs/) so the exception at the BOTTOM of this file can
+# re-include one file — git cannot un-ignore a file whose PARENT DIRECTORY
+# is itself excluded.
+outputs/*
 data/**/*.csv
 data/**/*.tsv
 data/**/*.txt
@@ -235,3 +238,11 @@ outputs/**/*.csv
 outputs/**/*.json
 app/node_modules/
 app/dist/
+
+# Exception: a small precomputed config artifact (per-gene-class production
+# weights), not a data file — versioned so `api/main.py` startup doesn't
+# have to recompute it (~8 min). Regenerate whenever VALIDATION_SET changes
+# (see api/main.py::_warm_learned_weights docstring) and commit the update.
+# Must stay the LAST rule touching outputs/ — a later outputs/**/*.json-style
+# pattern would re-exclude it (gitignore is last-match-wins).
+!outputs/production_weights.json

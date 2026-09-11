@@ -62,19 +62,70 @@ _learned_weights_by_class_cache: dict | None = None
 _learned_weights_lock = asyncio.Lock()
 
 
-async def _get_learned_weights_for_gene(gene: str) -> dict:
+# Precomputed once offline (see the regeneration command in
+# _warm_learned_weights' docstring below) so startup doesn't pay the
+# ~8 minute optimise_weights_by_class(include_mutation=True) cost.
+_PRODUCTION_WEIGHTS_FILE = OUTPUTS_DIR / "production_weights.json"
+
+
+async def _warm_learned_weights() -> dict:
+    """
+    Populate BOTH learned-weight caches that read this — this module's own,
+    and ranker's _CACHED_LEARNED_WEIGHTS_BY_CLASS (the agentic pipeline
+    calls rank() with no weights, which reads ranker's cache directly, not
+    this one) — from outputs/production_weights.json, a near-instant file
+    read.
+
+    ⚠️ REGENERATION REQUIRED: outputs/production_weights.json is a frozen
+    snapshot of optimise_weights_by_class(include_mutation=True). It MUST be
+    regenerated any time weights_learned.VALIDATION_SET changes (genes
+    added/removed/reclassified) — otherwise the API silently serves stale
+    weights fit on an old gene set. Regenerate with:
+
+        python3 -c "
+        from models.classical.weights_learned import optimise_weights_by_class
+        import json
+        weights = optimise_weights_by_class(include_mutation=True)
+        clean = {cls: ({k: float(v) for k, v in w.items()} if w else None)
+                 for cls, w in weights.items()}
+        with open('outputs/production_weights.json', 'w') as f:
+            json.dump(clean, f, indent=2)
+        "
+
+    then commit the updated file.
+
+    Falls back to computing live (~8 min, blocking startup) only if the
+    file is missing — loudly, not silently — so a forgotten regeneration
+    degrades to correct-but-slow rather than crashing.
+    """
     global _learned_weights_by_class_cache
     async with _learned_weights_lock:
         if _learned_weights_by_class_cache is None:
-            from functools import partial
+            import models.classical.ranker as _ranker
 
-            from models.classical.weights_learned import optimise_weights_by_class
-            # include_mutation=True — LOF genes rank on damaging-mutation
-            # status, not expression (see weights_learned._apply_lof_mutation_weight).
-            _learned_weights_by_class_cache = await asyncio.to_thread(
-                partial(optimise_weights_by_class, include_mutation=True)
-            )
-    by_class = _learned_weights_by_class_cache
+            if _PRODUCTION_WEIGHTS_FILE.exists():
+                with open(_PRODUCTION_WEIGHTS_FILE, encoding="utf-8") as f:
+                    weights = json.load(f)
+            else:
+                print(f"[startup] WARNING: {_PRODUCTION_WEIGHTS_FILE} not found — "
+                      f"computing weights live (~8 min). Run the precompute "
+                      f"script (see _warm_learned_weights docstring) and commit "
+                      f"the file to avoid this on every cold start.")
+                from functools import partial
+
+                from models.classical.weights_learned import optimise_weights_by_class
+
+                weights = await asyncio.to_thread(
+                    partial(optimise_weights_by_class, include_mutation=True)
+                )
+
+            _learned_weights_by_class_cache = weights
+            _ranker._CACHED_LEARNED_WEIGHTS_BY_CLASS = weights
+    return _learned_weights_by_class_cache
+
+
+async def _get_learned_weights_for_gene(gene: str) -> dict:
+    by_class = _learned_weights_by_class_cache or await _warm_learned_weights()
     gene_class = classify_gene(gene)
     return by_class.get(gene_class) or by_class["tissue_specific"]
 
@@ -109,6 +160,15 @@ async def lifespan(app: FastAPI):
             app.state.eval_stats = json.load(f)
     else:
         app.state.eval_stats = None
+
+    # Warm the per-gene-class learned weights BEFORE accepting requests.
+    # Near-instant: loads the precomputed outputs/production_weights.json
+    # (see _warm_learned_weights' docstring) rather than re-running the
+    # ~8 min SLSQP + score precompute live.
+    print("[startup] Loading per-gene-class learned weights...")
+    _t0 = time.time()
+    await _warm_learned_weights()
+    print(f"[startup] Learned weights ready in {time.time() - _t0:.0f}s — accepting requests")
 
     yield
 
