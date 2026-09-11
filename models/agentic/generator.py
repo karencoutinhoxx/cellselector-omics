@@ -1,17 +1,54 @@
+import os
 from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
+from dotenv import load_dotenv
+
+from config import PROJECT_ROOT
+
+load_dotenv(PROJECT_ROOT / ".env")
+
 try:
     import ollama
     _OLLAMA_AVAILABLE = True
 except ImportError:
-    _OLLAMA_AVAILABLE = False   
+    _OLLAMA_AVAILABLE = False
 
-_MODEL_PRIMARY = "llama3.1:8b"
-_MODEL_FALLBACK = "llama3:latest"    # used when primary is OOM-killed
-_MODEL = _MODEL_PRIMARY
+try:
+    from groq import Groq
+    _GROQ_SDK_AVAILABLE = True
+except ImportError:
+    _GROQ_SDK_AVAILABLE = False
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LLM backend selection. Groq (hosted) is what runs in deployment — no local
+# GPU/server to manage. Ollama stays as the local-dev fallback: if
+# GROQ_API_KEY isn't set (e.g. a laptop without a Groq account), the pipeline
+# keeps working exactly as before, unchanged. LLM_BACKEND lets either be
+# forced explicitly (e.g. LLM_BACKEND=ollama to test the local path even
+# with a key configured).
+# ─────────────────────────────────────────────────────────────────────────────
+_GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
+_LLM_BACKEND_OVERRIDE = os.environ.get("LLM_BACKEND", "").strip().lower()
+
+if _LLM_BACKEND_OVERRIDE == "groq":
+    _USE_GROQ = True
+elif _LLM_BACKEND_OVERRIDE == "ollama":
+    _USE_GROQ = False
+else:
+    _USE_GROQ = bool(_GROQ_API_KEY) and _GROQ_SDK_AVAILABLE
+
+_groq_client = Groq(api_key=_GROQ_API_KEY) if (_USE_GROQ and _GROQ_API_KEY) else None
+
+_GROQ_MODEL = "openai/gpt-oss-20b"
+# NOTE: as of 2026-09, Groq's catalog no longer serves any Llama model —
+# llama-3.1-8b-instant returns 404 model_not_found (confirmed live via
+# client.models.list()). gpt-oss-20b is the closest fast/small equivalent
+# on their current lineup. Re-check client.models.list() if this 404s again.
+_OLLAMA_MODEL_PRIMARY = "llama3.1:8b"
+_OLLAMA_MODEL_FALLBACK = "llama3:latest"    # used when primary is OOM-killed
 
 SYSTEM_PROMPT = """You are a bioinformatics assistant helping scientists at \
 AstraZeneca select cell lines for experiments. You are given structured \
@@ -27,11 +64,37 @@ When the evidence states which data sources are missing, report exactly those \
 — do not soften, generalise, or invent data coverage."""
 
 
-def _chat(prompt: str) -> str:
-    """Send a prompt to ollama and return the response string.
+def _chat_groq(prompt: str) -> str:
+    """Send a prompt to Groq's hosted Llama 3.1 8B and return the response text."""
+    if _groq_client is None:
+        raise RuntimeError(
+            "Groq backend selected but not usable — GROQ_API_KEY missing or "
+            "the groq package isn't installed (pip install groq)."
+        )
+    try:
+        response = _groq_client.chat.completions.create(
+            model=_GROQ_MODEL,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.3,
+            # 2048, not 1024: gpt-oss-20b is a reasoning model that spends
+            # part of the token budget on internal reasoning before the
+            # visible 5-section answer — 1024 was observed to truncate
+            # mid-way through section 4 in testing.
+            max_tokens=2048,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"Groq API call failed: {exc}") from exc
+    return response.choices[0].message.content
 
-    Tries _MODEL_PRIMARY first; if the model is OOM-killed falls back to
-    _MODEL_FALLBACK automatically (llama4:scout needs ~67 GB RAM).
+
+def _chat_ollama(prompt: str) -> str:
+    """Send a prompt to a local ollama server and return the response text.
+
+    Tries _OLLAMA_MODEL_PRIMARY first; if the model is OOM-killed falls back
+    to _OLLAMA_MODEL_FALLBACK automatically (llama4:scout needs ~67 GB RAM).
     """
     if not _OLLAMA_AVAILABLE:
         raise RuntimeError(
@@ -43,10 +106,10 @@ def _chat(prompt: str) -> str:
         {"role": "user",   "content": prompt},
     ]
 
-    for model in (_MODEL_PRIMARY, _MODEL_FALLBACK):
+    for model in (_OLLAMA_MODEL_PRIMARY, _OLLAMA_MODEL_FALLBACK):
         try:
             response = ollama.chat(model=model, messages=msgs)
-            if model != _MODEL_PRIMARY:
+            if model != _OLLAMA_MODEL_PRIMARY:
                 print(f"  [generator] Using fallback model: {model}")
             return response["message"]["content"]
         except Exception as exc:
@@ -62,8 +125,21 @@ def _chat(prompt: str) -> str:
             raise
 
     raise RuntimeError(
-        f"All models failed. Primary: {_MODEL_PRIMARY}, Fallback: {_MODEL_FALLBACK}"
+        f"All models failed. Primary: {_OLLAMA_MODEL_PRIMARY}, "
+        f"Fallback: {_OLLAMA_MODEL_FALLBACK}"
     )
+
+
+def _chat(prompt: str) -> str:
+    """
+    Route to Groq (hosted, used in deployment) or local Ollama (dev
+    fallback when GROQ_API_KEY isn't configured) — decided once at import
+    time by _USE_GROQ. Prompt construction (SYSTEM_PROMPT, the caller's
+    prompt text) is identical either way; only the API call differs.
+    """
+    if _USE_GROQ:
+        return _chat_groq(prompt)
+    return _chat_ollama(prompt)
 
 
 def generate_justification(
@@ -88,8 +164,13 @@ Provide your answer in exactly this format:
 name the data sources from the "MISSING SOURCES" line of the DATA COVERAGE \
 section — those exact source names and only those, written into a normal \
 sentence (do NOT copy the bracketed [MISSING]/[PRESENT] list). If that line \
-says "none", write "All five evidence sources have data for this pair." Then \
-add any other genuine limitations.)
+says "none", write "All five evidence sources have data for this pair." \
+In the TRADE-OFFS section, also state the mutation status exactly as given \
+in the MUTATION STATUS block above — whether a damaging variant was found \
+and cited, whether the gene is confirmed wild-type (variant calls exist, \
+none damaging), or whether mutation status is unknown (no variant calls \
+exist for this cell line). Do not omit this even when other trade-offs are \
+more prominent. Then add any other genuine limitations.)
 5. BEST FOR: (what experiment type suits this cell line best)"""
 
     return _chat(prompt)

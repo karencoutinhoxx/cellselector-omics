@@ -7,6 +7,7 @@ tqdm
 biopython
 scipy
 ollama
+groq
 requests
 networkx
 neo4j
