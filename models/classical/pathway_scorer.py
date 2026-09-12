@@ -84,12 +84,19 @@ def score_pathway_activity(
         _PATHWAY_SCORE_CACHE[gene] = empty
         return empty
 
-    # Step 2: For each neighbor gene (capped at 20 for performance), get
-    # expression scores across all cell lines and tally how many neighbors
-    # clear the threshold per cell line.
+    # Step 2: For each neighbor gene (capped at 50 — matches the raised
+    # ingest.py max_neighbor_genes cap, was 20 to match the old max_pathways
+    # x max_neighbor_genes-starved graph), get expression scores across all
+    # cell lines and tally how many neighbors clear the threshold per cell
+    # line. Raised as a controlled test: isolates whether the naive scorer's
+    # earlier "pathway=0.00 optimal" verdict was neighbor-starved (this cap
+    # was quietly re-truncating an already-corrected, already-larger
+    # neighbor_genes list) versus a structural problem with the
+    # presence/absence mechanism itself, now that both pathway relevance
+    # (STEP A) and neighbor sample size are no longer the limiting factor.
     hpa_to_cvcl, ach_to_cvcl, gsm_to_cvcl = load_mappings()
 
-    attempted = neighbor_genes[:20]
+    attempted = neighbor_genes[:50]
     total_neighbors = len(attempted)  # decremented on failure below
     all_expression: dict[str, int] = {}  # cvcl -> count of expressed neighbors
 

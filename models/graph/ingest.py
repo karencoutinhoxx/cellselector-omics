@@ -63,8 +63,8 @@ def ingest_gene(
     hpa_to_cvcl: dict,
     gsm_to_cvcl: dict,
     scored_genes: set[str],
-    max_pathways: int = 3,
-    max_neighbor_genes: int = 15,
+    max_pathways: int = 10,
+    max_neighbor_genes: int = 50,
     max_cell_lines_per_gene: int = 10,
     max_cell_lines_per_neighbor: int = 3,
 ) -> None:
@@ -79,6 +79,17 @@ def ingest_gene(
     and written in this run, so a gene that shows up as a neighbor under
     multiple target genes' pathways (common — pathways overlap heavily)
     only gets scored once.
+
+    max_pathways / max_neighbor_genes: raised from 3/15 (was: same values as
+    the OLD, now-fixed get_kegg_pathways()/get_genes_in_pathway() caps,
+    compounding them) to 10/50. get_kegg_pathways() now returns the true,
+    relevance-filtered list (some genes have 40+ real pathways; KEGG's
+    "Human Diseases" noise is already excluded upstream), and pathways
+    themselves can genuinely have 300+ true members — going fully uncapped
+    here would mean scoring RNA expression for potentially thousands of
+    unique neighbor genes per ingestion run (each a real parquet read), so
+    this stays a bounded sample rather than the complete pathway, just a
+    much less severe truncation than before.
     """
     print(f"Ingesting {gene}...")
 

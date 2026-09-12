@@ -40,7 +40,17 @@ from config import COPY_NUMBER_FILE, SAMPLE_INFO
 # their own copy — the original bug this fixed was full_evaluation.py's and
 # cross_validated_evaluation.py's separate scoring paths silently not
 # knowing about copy_number at all.
-AMPLIFICATION_DRIVEN_GENES = {"MYCN", "ERBB2"}
+#
+# FGFR1 added 2026-09-11 (CIViC-sourced expansion — verified against our
+# own copy-number data: MDA-MB-134-VI, log2CN=3.29, ~20 copies). NOTE:
+# AMPLIFICATION_COPY_NUMBER_WEIGHT below (0.30) was grid-search-verified
+# for the ORIGINAL 2-gene set (MYCN, ERBB2) only, whose own grid shapes
+# already disagreed with each other above ~0.30 (see that constant's
+# docstring) — it has NOT been re-verified for FGFR1 specifically. Not
+# re-running that grid search here (out of scope for this task); flagging
+# so a 3-gene-verified weight isn't assumed where a 2-gene one is what's
+# actually been checked.
+AMPLIFICATION_DRIVEN_GENES = {"MYCN", "ERBB2", "FGFR1"}
 
 # Fixed constant, NOT fit via optimise_weights_by_class()'s SLSQP — same
 # treatment as weights_learned._LOF_PRODUCTION_MUTATION_WEIGHT /

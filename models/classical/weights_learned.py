@@ -71,6 +71,36 @@ VALIDATION_SET = {
     # Cell cycle
     "CDK4":  ["COLO 800", "NCI-H460"],
     "CCND1": ["MCF-7", "SK-BR-3"],
+
+    # Independent CIViC-sourced expansion — added 2026-09-11. COSMIC Cancer
+    # Gene Census (the original target) requires registration we didn't
+    # have; CIViC's open API provided independent evidence-based gene
+    # selection instead, and every target below was verified against our
+    # own ingested mutation/copy-number data (same standard as the APC/VHL/
+    # MLH1/PTEN/MSH2 expansion above) rather than cited from literature
+    # alone. GATA3 was excluded (only 1 CIViC variant, no evidence text —
+    # insufficient independent evidence to defend a target).
+
+    # Loss-of-function tumour suppressors
+    "CDKN2A":  ["HL-60"],          # p.R80Ter, pathogenic, high impact
+    "SMAD4":   ["Panc 02.03"],     # p.R135Ter, pathogenic, high impact
+    "STK11":   ["A549"],           # p.Q37Ter, pathogenic, high impact
+    "NF1":     ["COLO 792"],       # p.Y2285TfsTer5, pathogenic, high impact
+    "ARID1A":  ["TOV-21G"],        # p.Y551LfsTer72, high impact
+    "SMARCA4": ["NCI-H838"],       # splice site, pathogenic, high impact
+    "CDH1":    ["SNU-638"],        # p.P126RfsTer89, pathogenic, high impact
+
+    # Oncogenes (point-mutation / activating)
+    "NRAS":   ["SK-MEL-2"],   # p.Q61R, pathogenic — textbook NRAS-melanoma hotspot
+    "CTNNB1": ["AGS"],        # p.G34E, pathogenic
+    "AKT1":   ["IHH-4"],      # p.E17K, pathogenic — CIViC's headline AKT1 variant
+    "NOTCH1": ["Jurkat"],     # p.P724L — canonical T-ALL line
+    "JAK2":   ["HEL"],        # p.V617F, pathogenic — the classic MPN-defining mutation
+    "MAP2K1": ["SNU-C1"],     # p.F53L, pathogenic
+
+    # Amplification-driven (routed to AMPLIFICATION_DRIVEN_GENES /
+    # copy_number_scorer.py, NOT the point-mutation path above)
+    "FGFR1":  ["MDA-MB-134-VI"],  # log2CN=3.29, ~20 copies, high-level amplification
 }
 
 # Optimise five weights (rna/protein/quality/context/pathway); geo bonus

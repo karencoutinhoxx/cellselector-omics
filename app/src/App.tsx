@@ -2,7 +2,6 @@ import { Routes, Route } from 'react-router-dom'
 import Navbar from './components/Navbar'
 import Home from './pages/Home'
 import Search from './pages/Search'
-import Browse from './pages/Browse'
 import About from './pages/About'
 import Data from './pages/Data'
 
@@ -13,7 +12,6 @@ export default function App() {
       <Routes>
         <Route path="/"       element={<Home />}   />
         <Route path="/search" element={<Search />} />
-        <Route path="/browse" element={<Browse />} />
         <Route path="/about"  element={<About />}  />
         <Route path="/data"   element={<Data />}   />
       </Routes>

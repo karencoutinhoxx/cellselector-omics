@@ -46,6 +46,10 @@ GENE_CLASSES: dict[str, list[str]] = {
     "loss_of_function": [
         "BRCA1", "BRCA2", "RB1", "ATM", "PTEN",
         "APC", "VHL", "MLH1", "MSH2",
+        # Added via the CIViC-sourced independent validation-set expansion
+        # (COSMIC CGC required registration we didn't have; CIViC's open
+        # API + our own mutation_gene_features.csv verification stood in).
+        "CDKN2A", "SMAD4", "STK11", "NF1", "ARID1A", "SMARCA4", "CDH1",
     ],
 }
 
@@ -85,6 +89,22 @@ GENE_ROLES: dict[str, str] = {
     # Proliferation markers
     "MKI67": "proliferation marker (Ki-67)",
     "PCNA":  "proliferation marker",
+    # Tumor suppressors — CIViC-sourced expansion
+    "CDKN2A":  "tumor suppressor (cell-cycle inhibitor, p16)",
+    "SMAD4":   "tumor suppressor (TGF-beta signaling)",
+    "STK11":   "tumor suppressor (kinase, LKB1)",
+    "NF1":     "tumor suppressor (RAS-GAP)",
+    "ARID1A":  "tumor suppressor (chromatin remodeling, SWI/SNF)",
+    "SMARCA4": "tumor suppressor (chromatin remodeling, SWI/SNF, BRG1)",
+    "CDH1":    "tumor suppressor (cell adhesion, E-cadherin)",
+    # Oncogenes / signaling — CIViC-sourced expansion
+    "NRAS":   "oncogene (RAS family GTPase)",
+    "CTNNB1": "oncogene (WNT signaling, beta-catenin)",
+    "AKT1":   "oncogene (kinase)",
+    "NOTCH1": "oncogene (receptor, context-dependent — also a tumor suppressor in some tissues)",
+    "JAK2":   "oncogene (kinase)",
+    "MAP2K1": "oncogene (kinase, MEK1)",
+    "FGFR1":  "receptor tyrosine kinase (amplification-driven)",
 }
 
 
