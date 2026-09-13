@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from config import CELL_LINE_LOOKUP
 from models.classical.mutation_scorer import score_mutation_impact
 from models.classical.copy_number_scorer import score_copy_number
+from models.classical.rwr_scorer import score_rwr
 from models.classical.pathway_scorer import score_pathway_activity
 from models.classical.scorer import (
     classify_gene,
@@ -223,6 +224,19 @@ def _precompute_scores(
         else:
             result["copy_number_score"] = 0.0
         result["copy_number_score"] = result["copy_number_score"].fillna(0.0)
+
+        # RWR (graph-structure signal, all classes) — same "merge for every
+        # gene, not gated" reasoning as copy_number_score above. See
+        # models/classical/rwr_scorer.py.
+        rwr_df = score_rwr(gene)
+        if len(rwr_df) > 0:
+            result = result.merge(
+                rwr_df[["cellosaurus_id", "rwr_score"]],
+                on="cellosaurus_id", how="left",
+            )
+        else:
+            result["rwr_score"] = 0.0
+        result["rwr_score"] = result["rwr_score"].fillna(0.0)
 
         # Deterministic row order BEFORE any downstream ranking. Every merge
         # above (rna/protein/quality/context/pathway/mutation) can leave rows

@@ -142,6 +142,18 @@ def run_comparison():
     pathway_cols = base_cols + ["pathway_activity_score"]
     mutation_cols = base_cols + ["mutation_impact_score"]
     all_cols = base_cols + ["pathway_activity_score", "mutation_impact_score"]
+    # rwr_score AND copy_number_score added as fusable sources — full
+    # feature parity with production (rna, protein, quality, context,
+    # mutation, copy_number, rwr). copy_number_score was the last missing
+    # source (flagged earlier as out of scope, now closed) — it's 0.0 for
+    # every gene except MYCN/ERBB2/FGFR1, so its effect on these configs'
+    # MRR should be small, but included for genuine parity rather than
+    # assumed negligible.
+    mutation_rwr_cols = mutation_cols + ["rwr_score", "copy_number_score"]  # closest
+    # RRF analog to production's actual formula shape: mutation for LOF,
+    # copy_number for amplification genes, rwr for every class, no pathway
+    # (production's ts/lof classes don't weight pathway)
+    all_rwr_cols = all_cols + ["rwr_score", "copy_number_score"]  # fully maximal: every source
 
     # ============================================
     # CONFIG D: RRF (4 sources, no pathway), k=60
@@ -172,6 +184,18 @@ def run_comparison():
     # CONFIG H: RRF (6 sources: pathway + mutation), k=60
     # ============================================
     mrr_h, per_gene_h = run_rrf_config("CONFIG H: RRF (6 sources: pathway+mutation, k=60)", all_cols, k=60)
+
+    # ============================================
+    # CONFIG I: RRF (6 sources: mutation + rwr, no pathway), k=60
+    # Closest RRF analog to production's actual formula shape.
+    # ============================================
+    mrr_i, per_gene_i = run_rrf_config("CONFIG I: RRF (6 sources: mutation+rwr, k=60)", mutation_rwr_cols, k=60)
+
+    # ============================================
+    # CONFIG J: RRF (7 sources: pathway + mutation + rwr), k=60
+    # Fully maximal RRF config — every source production now has access to.
+    # ============================================
+    mrr_j, per_gene_j = run_rrf_config("CONFIG J: RRF (7 sources: pathway+mutation+rwr, k=60)", all_rwr_cols, k=60)
 
     # ============================================
     # CONFIG F: LambdaMART (LOO-CV — retrain per fold)
@@ -242,6 +266,8 @@ def run_comparison():
             ("E2 (RRF, 5 src +pathway k10)", per_gene_e2),
             ("G  (RRF, 5 src +mutation)",   per_gene_g),
             ("H  (RRF, 6 src path+mut)",    per_gene_h),
+            ("I  (RRF, 6 src mut+rwr)",     per_gene_i),
+            ("J  (RRF, 7 src path+mut+rwr)", per_gene_j),
             ("F  (LambdaMART)",            per_gene_f),
         ]:
             genes, rrs_alt, rrs_a = _aligned_rrs(per_gene, per_gene_a)
@@ -266,7 +292,9 @@ def run_comparison():
     print(f"  Config E2 (RRF, 5 sources w/ pathway, k=10):    {mrr_e2:.4f}")
     print(f"  Config G  (RRF, 5 sources w/ mutation, k=60):   {mrr_g:.4f}")
     print(f"  Config H  (RRF, 6 sources pathway+mutation):    {mrr_h:.4f}")
-    print(f"  Config F  (LambdaMART, LOO-CV):                 {mrr_f:.4f}")
+    print(f"  Config I  (RRF, 6 sources mutation+rwr):        {mrr_i:.4f}")
+    print(f"  Config J  (RRF, 7 sources pathway+mutation+rwr):{mrr_j:.4f}")
+    print(f"  Config F  (LambdaMART, LOO-CV, +rwr feature):   {mrr_f:.4f}")
     print()
     print("  NOTE: Configs D/D2/E/E2 (RRF) have no fitted parameters — k is")
     print("  a fixed constant, not learned — so they're evaluated directly")

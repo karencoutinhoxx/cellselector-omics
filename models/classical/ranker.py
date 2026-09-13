@@ -13,6 +13,20 @@ from models.classical.copy_number_scorer import (
     apply_amplification_copy_number_weight,
     score_copy_number,
 )
+from models.classical.rwr_scorer import apply_rwr_weight, score_rwr
+
+# Face-validity fix, not a grid-searched weight — mirrors the existing
+# tissue_specific +0.05 mutation BONUS (also a small fixed constant, never
+# grid-searched) with a symmetric PENALTY for ubiquitous-class genes where
+# "wild-type" is the more commonly sought experimental context (control
+# lines, baseline comparisons) than "mutant". Scoped to TP53 specifically,
+# not the whole ubiquitous class: TP53 has 1,040 cell lines with a damaging
+# variant call vs 6-40 for every other ubiquitous gene (ACTB, GAPDH, MDM2,
+# CDK2/4/6, PCNA, MKI67, PARP1, CCND1) — a 20-170x difference. Applying this
+# broadly would be nearly inert for those genes and risks penalizing a
+# genuinely rare, possibly biologically important variant for them.
+WILD_TYPE_PREFERRED_GENES = {"TP53"}
+WILD_TYPE_MUTATION_PENALTY = 0.05
 from models.classical.scorer import (
     FIXED_WEIGHTS,
     _level_label_with_percentile,
@@ -219,6 +233,17 @@ def rank(
     if gene in AMPLIFICATION_DRIVEN_GENES and "copy_number" not in weights:
         weights = apply_amplification_copy_number_weight(weights)
 
+    # RWR blending — applies to EVERY gene class (unlike copy_number, which
+    # is gene-specific), at the grid-search-verified weight per class (see
+    # rwr_scorer.RWR_WEIGHT_BY_CLASS): tissue_specific 0.24, ubiquitous
+    # 0.28, loss_of_function 0.38. Applied AFTER the copy_number block
+    # above so it rescales whatever came out of that (the mutation- or
+    # copy_number-augmented vector), not the bare 4D baseline — same order
+    # the grid search itself used. Same "gated on key, not on weights
+    # origin" reasoning as copy_number above.
+    if "rwr" not in weights:
+        weights = apply_rwr_weight(weights, gene_class)
+
     hpa_to_cvcl, ach_to_cvcl, gsm_to_cvcl = load_mappings()
 
     rna_df     = score_rna_expression(gene, hpa_to_cvcl, gsm_to_cvcl,
@@ -351,6 +376,20 @@ def rank(
             result["copy_number_score"] = 0.0
             result["copy_number_detail"] = ""
 
+    # ── Random Walk with Restart (graph-structure signal, all classes) ──────
+    # Blended in ADDITION to the existing formula, not a replacement — see
+    # models/classical/rwr_scorer.py. Merged unconditionally (unlike
+    # copy_number, which is gene-gated): RWR showed genuine lift in every
+    # class via grid search, so it's always computed, and only its WEIGHT
+    # (applied above via apply_rwr_weight) is class-dependent.
+    try:
+        rwr_df = score_rwr(gene)
+        result = result.merge(rwr_df, on="cellosaurus_id", how="left")
+        result["rwr_score"] = result["rwr_score"].fillna(0.0).astype(float)
+    except Exception as exc:
+        print(f"[ranker] RWR scoring failed: {exc}")
+        result["rwr_score"] = 0.0
+
     if gene_class == "loss_of_function" and "mutation" in weights:
         # Mutation-primary LOF vector {mutation, rna, protein, quality,
         # context} (no pathway) — see weights_learned._apply_lof_mutation_weight.
@@ -363,6 +402,7 @@ def rank(
             + weights.get("protein", 0.0) * result["protein_score"]
             + weights.get("quality", 0.0) * result["quality_score"]
             + weights.get("context", 0.0) * result["context_score"]
+            + weights.get("rwr", 0.0)     * result["rwr_score"]
             + result["geo_confirmation"]   # additive, not weighted
         )
     else:
@@ -373,6 +413,15 @@ def rank(
         mutation_bonus = (
             0.05 * result["mutation_impact_score"]
             if gene_class == "tissue_specific" else 0.0
+        )
+        # Wild-type PENALTY for genes in WILD_TYPE_PREFERRED_GENES (TP53
+        # specifically — see the constant's comment above). Subtracted, not
+        # added: a damaging variant here makes a line LESS suitable as the
+        # "wild-type control" context this gene's ubiquitous-class formula
+        # is otherwise silent about.
+        wild_type_penalty = (
+            WILD_TYPE_MUTATION_PENALTY * result["mutation_impact_score"]
+            if gene in WILD_TYPE_PREFERRED_GENES else 0.0
         )
         # Gated on both the gene AND an explicit "copy_number" weights key —
         # see the AMPLIFICATION_DRIVEN_GENES block above. No default weight;
@@ -388,9 +437,11 @@ def rank(
             + weights["quality"] * result["quality_score"]
             + weights["context"] * result["context_score"]
             + weights.get("pathway", 0.0) * result["pathway_activity_score"]
+            + weights.get("rwr", 0.0) * result["rwr_score"]
             + copy_number_term
             + result["geo_confirmation"]   # additive, not weighted
             + mutation_bonus
+            - wild_type_penalty
         )
     result["final_score"] = result["final_score"].clip(0.0, 1.0)
     result["gene_class"] = classify_gene(gene)
@@ -449,6 +500,7 @@ def rank(
         "vs_next_rank", "quality_explanation", "context_explanation",
         "pathway_activity_score", "pathway_genes_expressed", "pathway_genes_total",
         "mutation_impact_score", "mutation_detail",
+        "rwr_score",
     ]
     if gene in AMPLIFICATION_DRIVEN_GENES:
         out_cols += ["copy_number_score", "copy_number_detail"]

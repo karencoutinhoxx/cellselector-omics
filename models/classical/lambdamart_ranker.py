@@ -4,8 +4,12 @@ import lightgbm as lgb
 
 FEATURE_COLUMNS = [
     "rna_score", "protein_score", "quality_score",
-    "context_score", "pathway_activity_score", "mutation_impact_score"
+    "context_score", "pathway_activity_score", "mutation_impact_score",
+    "rwr_score", "copy_number_score",
 ]
+# Full feature parity with production as of tonight: copy_number_score
+# (MYCN/ERBB2/FGFR1 only — 0.0 for every other gene) was the last missing
+# source, flagged earlier as out of scope and now closed.
 
 
 def build_training_data(

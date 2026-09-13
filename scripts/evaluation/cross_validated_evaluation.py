@@ -12,6 +12,8 @@ from models.classical.copy_number_scorer import (
     AMPLIFICATION_DRIVEN_GENES,
     apply_amplification_copy_number_weight,
 )
+from models.classical.rwr_scorer import apply_rwr_weight
+from models.classical.ranker import WILD_TYPE_MUTATION_PENALTY, WILD_TYPE_PREFERRED_GENES
 from models.classical.weights_learned import (
     VALIDATION_SET,
     _GRID_SEARCH_PATHWAY_WEIGHTS,
@@ -53,6 +55,15 @@ def _reciprocal_rank_for_gene(
         return 0.0
     df = scores_cache[gene].copy()
 
+    # NOTE: this formula does NOT include ranker.rank()'s tissue_specific
+    # +0.05 mutation bonus — a pre-existing gap between this script's test
+    # formula and production, predating this change, not fixed here (out
+    # of scope). The wild-type penalty below IS added, since it's what
+    # this specific change needs STEP 4's re-eval to actually reflect.
+    wild_type_penalty = (
+        WILD_TYPE_MUTATION_PENALTY * df.get("mutation_impact_score", 0.0)
+        if gene in WILD_TYPE_PREFERRED_GENES else 0.0
+    )
     df["test_score"] = (
         weights.get("rna", 0.0)     * df["rna_score"]
         + weights.get("protein", 0.0) * df["protein_score"]
@@ -61,7 +72,9 @@ def _reciprocal_rank_for_gene(
         + weights.get("pathway", 0.0) * df.get("pathway_activity_score", 0.0)
         + weights.get("mutation", 0.0) * df.get("mutation_impact_score", 0.0)
         + weights.get("copy_number", 0.0) * df.get("copy_number_score", 0.0)
+        + weights.get("rwr", 0.0) * df.get("rwr_score", 0.0)
         + df["geo_confirmation"]
+        - wild_type_penalty
     ).clip(0.0, 1.0)
 
     # Multi-key tie-break (scorer.rank_sort): test_score is clipped to 1.0,
@@ -163,6 +176,14 @@ def leave_one_out_evaluation():
             weights = {k: v * (1 - pw) for k, v in baseline_4d.items()}
             weights["pathway"] = pw
             extra_desc = f"path={pw:.2f}"
+
+        # RWR blending, all classes — see rwr_scorer.RWR_WEIGHT_BY_CLASS /
+        # apply_rwr_weight. Applied last, on top of whatever branch above
+        # produced (mutation-primary LOF vector, copy_number-primary
+        # amplification vector, or plain pathway-weighted vector) — same
+        # order the grid search itself used to find these weights.
+        weights = apply_rwr_weight(weights, hold_out_class)
+        extra_desc += f" rwr={weights.get('rwr', 0.0):.2f}"
 
         rr = _reciprocal_rank_for_gene(hold_out, weights, scores_cache, name_to_cvcl)
         per_gene_c[hold_out] = rr
