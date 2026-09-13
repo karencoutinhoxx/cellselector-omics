@@ -6,7 +6,7 @@
 
 *A decision-support framework that reconciles fragmented public omics resources into a single, evidence-weighted, and interpretable recommendation for experimental cell line selection.*
 
-**University of Bristol — MSc Data Science Group Project (Team 26)**
+**University of Bristol** · MSc Data Science Group Project · Team 26
 **Conducted in partnership with AstraZeneca**
 
 </div>
@@ -15,18 +15,18 @@
 
 ## Abstract
 
-Selecting an appropriate immortalised human cell line is a foundational determinant of experimental validity in biopharmaceutical research, yet in practice it remains a manual, expertise-dependent task: the evidence required is distributed across independent public repositories that differ in nomenclature, measurement modality, and unit conventions, and no single resource supports gene-driven, cross-source model selection. **CellSelector Omics** addresses this gap. It harmonises five public multi-omics datasets — Human Protein Atlas (HPA) and DepMap transcriptomics, DepMap CRISPR gene-dependency, Gene Expression Omnibus (GEO) functional-genomics data, and CCLE proteomics — onto a canonical identity layer spanning 2,076 human cell lines and ~222 million expression records, and returns a ranked, confidence-weighted, and citation-grounded set of candidate cell lines for a queried gene.
+Selecting an appropriate immortalised human cell line is a foundational determinant of experimental validity in biopharmaceutical research, yet in practice it remains a manual, expertise-dependent task: the evidence required is distributed across independent public repositories that differ in nomenclature, measurement modality, and unit conventions, and no single resource supports gene-driven, cross-source model selection. **CellSelector Omics** addresses this gap. It integrates five public multi-omics datasets (the Human Protein Atlas, DepMap transcriptomics, DepMap CRISPR gene dependency, the Gene Expression Omnibus, and CCLE proteomics) onto a single identity layer spanning 2,076 human cell lines and around 222 million expression records, and returns a ranked, confidence-weighted, and evidence-cited set of candidate cell lines for any queried gene.
 
-The central methodological contribution is a **gene-class–aware scoring model**. We show empirically that a single global weighting of evidence is inadequate: tissue-specific, ubiquitously-expressed, and loss-of-function genes require materially different evidence weightings, and an optimiser given only ranking performance independently converges on biologically coherent per-class schemes — weighting expression for tissue-specific genes and disease/tissue context for loss-of-function genes. The classical ranker is complemented by a retrieval-augmented generative model that produces structured, source-attributed justifications, constraining the language model to synthesis over verified evidence rather than open-ended generation.
+The main methodological contribution is a **gene-class-aware scoring model**. We found that a single global weighting of the evidence does not work: tissue-specific, ubiquitously-expressed, and loss-of-function genes each need different evidence weightings. Notably, an optimiser given only ranking performance, and no biological guidance, independently arrived at biologically sensible weightings for each class, weighting expression heavily for tissue-specific genes and disease/tissue context for loss-of-function genes. The classical ranker is complemented by a retrieval-augmented generative model that produces structured, source-attributed justifications, constraining the language model to synthesis over verified evidence rather than open-ended generation.
 
 ---
 
 ## Motivation and Problem Statement
 
-The scientific value of a cell-line experiment is bounded by the degree to which the chosen line reflects the biological context of interest. Despite this, model selection is typically performed by manually cross-referencing resources such as DepMap, HPA, and GEO — a process that is slow, irreproducible, and sensitive to the individual expertise of the researcher. The underlying difficulty is one of **heterogeneous data integration under uncertainty**:
+The scientific value of a cell-line experiment is bounded by the degree to which the chosen line reflects the biological context of interest. Despite this, model selection is typically performed by manually cross-referencing resources such as DepMap, HPA, and GEO, a process that is slow, irreproducible, and sensitive to the individual expertise of the researcher. The underlying difficulty is one of **heterogeneous data integration under uncertainty**:
 
 1. **Identity fragmentation.** The same physical cell line is recorded under divergent identifiers across sources (e.g. `HCC827`, `Hcc-827`, and the DepMap accession `ACH-000164` all denote a single line). Absent reconciliation, evidence for one line is silently partitioned across apparent duplicates, systematically distorting any downstream ranking.
-2. **Incommensurable evidence.** Transcript-level (normalised/log TPM), protein-level (mass-spectrometry intensity), and functional (CRISPR dependency) signals are measured on non-comparable scales and cannot be naively aggregated.
+2. **Incompatible evidence.** Transcript-level (normalised/log TPM), protein-level (mass-spectrometry intensity), and functional (CRISPR dependency) signals are measured on scales that are not directly comparable and cannot simply be averaged together.
 3. **Class-dependent semantics.** The notion of a "suitable" model is gene-dependent: high specific expression identifies a good model for a receptor tyrosine kinase, but is uninformative for a tumour suppressor studied through loss-of-function.
 
 This work treats each of these as a first-class design constraint rather than an implementation detail.
@@ -46,7 +46,7 @@ This work treats each of these as a first-class design constraint rather than an
                                                                └────────────────────┘
 ```
 
-The **nomenclature-resolution layer** constitutes the epistemic foundation of the system. By mapping every source-specific identifier onto a stable Cellosaurus accession (achieving 92–100% resolution coverage across the expression sources), it guarantees that evidence accumulates against a single, consistent identity — a precondition without which cross-source agreement, the core signal the recommender exploits, cannot be measured.
+The **nomenclature-resolution layer** is the foundation the whole system rests on. It maps every source-specific identifier onto a stable Cellosaurus accession, achieving 92 to 100% coverage across the expression sources, so that evidence for a cell line accumulates against one consistent identity. Without this, the same line would be split across duplicate records and the cross-source agreement the recommender relies on could not be measured.
 
 ---
 
@@ -62,13 +62,13 @@ For a queried gene, each cell line is assigned a score combining percentile-norm
 A retrieval-augmented pipeline assembles the underlying evidence, KEGG pathway memberships, Cellosaurus growth properties, and targeted PubMed abstracts, and prompts a language model to produce a structured, source-cited justification. The ranking is decided by the classical model; the generative component is confined to explanation, so that any model failure degrades interpretability alone and never the recommendation itself.
 
 ### Knowledge graph
-Gene–pathway–cell-line relationships are materialised in a Neo4j graph, enabling multi-hop queries (e.g. cell lines linked to a target via shared pathway membership) that are inexpressible as relational joins; pre-materialisation reduced query latency from tens of seconds to sub-second.
+Gene-pathway-cell-line relationships are materialised in a Neo4j graph, enabling multi-hop queries (e.g. cell lines linked to a target via shared pathway membership) that are inexpressible as relational joins; pre-materialisation reduced query latency from tens of seconds to sub-second.
 
 ---
 
 ## Evaluation
 
-The classical model was assessed against a literature-curated validation set using Mean Reciprocal Rank and precision@k, and independently against a partner-defined panel of test genes from AstraZeneca. Results confirm that per-class weighting outperforms a global scheme, and that the low aggregate performance for ubiquitous and loss-of-function classes reflects a genuine biological property — the non-informativeness of expression for those classes — rather than a modelling deficiency. On the industry-defined panel the system reproduced expected behaviour across both routine and adversarial cases, including a housekeeping gene (correctly yielding a flat, winner-free distribution) and a gene with strong literature support but sparse coverage (correctly recovering the relevant lineage).
+The classical model was assessed against a literature-curated validation set using Mean Reciprocal Rank and precision@k, and independently against a partner-defined panel of test genes from AstraZeneca. Results confirm that per-class weighting outperforms a global scheme, and that the low aggregate performance for ubiquitous and loss-of-function classes reflects a genuine biological property, the non-informativeness of expression for those classes, rather than a modelling deficiency. On the industry-defined panel the system reproduced expected behaviour across both routine and adversarial cases, including a housekeeping gene (correctly yielding a flat, winner-free distribution) and a gene with strong literature support but sparse coverage (correctly recovering the relevant lineage).
 
 *Full metrics: `models/classical/evaluate.py` and `outputs/model_evaluation.json`.*
 
@@ -162,7 +162,7 @@ The validation set, while spanning the three gene classes, is modest and is used
 
 ## Contributors
 
-**Team 26 — University of Bristol MSc Data Science**
+**Team 26 · University of Bristol MSc Data Science**
 Ishaan Bhalla · Karen Coutinho · Aman Raj · Dixit Kaloorani Malarmannan
 
 Academic supervision: **Dr Daniel D'Andrea** · Industry partner: **AstraZeneca**
