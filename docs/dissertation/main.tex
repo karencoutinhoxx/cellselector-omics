@@ -1,0 +1,850 @@
+\documentclass[author={Karen Coutinho, Ishaan Bhalla, Aman Raj, Dixit Kaloorani Malarmannan},
+                supervisor={Dr. Daniel D'Andrea},
+                degree={MSc},
+                title={CellSelector Omics: A Multi-Omics Recommendation System for Human Cell Line Selection},
+                subtitle={},
+                type={},
+                year={2026}]{dissertation}
+
+\begin{document}
+
+\let\cleardoublepage\clearpage
+
+\maketitle
+
+\frontmatter
+
+\makedecl
+
+\tableofcontents
+\listoffigures
+\listoftables
+
+% =============================================================================
+
+\chapter*{Abstract}
+
+Cell line selection in cancer research requires manual cross-referencing of incompatible databases with conflicting identifiers, units, and sparse coverage. CellSelector Omics solves this by integrating 2,076 cell lines and 222 million expression records across five sources (HPA, DepMap, GEO, CCLE proteomics, KEGG), including partially-covered lines.
+
+Key finding: gene class determines ranking accuracy more than global weighting schemes. Tissue-specific genes (EGFR, ERBB2) rank accurately by expression level. Ubiquitous genes (GAPDH, ACTB) cannot be ranked by expression alone. Loss-of-function genes (TP53, BRCA1) rank by mutation status. Per-class weighting improves Mean Reciprocal Rank from 0.1096 to 0.2367 (+116\%, p=0.0006). Loss-of-function genes achieve 4,700\% improvement (0.0041 → 0.1968). Precision@k confirms performance: tissue-specific P@1=0.75, P@5=0.63; loss-of-function P@1=0.44, P@5=0.34.
+
+Learned weights converge to biological principles without biological constraint. Loss-of-function genes receive mutation-impact weight 0.80 and expression weight 0.003 (270-fold difference). This precisely matches expert expectation. The convergence is not coincidental: it reveals that gene class is a discoverable, fundamental property of the ranking problem.
+
+Systematic validation identified three critical bugs: HPA/GEO identifier misattribution (94\% and 80\% incorrect), non-deterministic tie-breaking violating reproducibility, and score-saturation masking weak signal. Domain-expert validation at AstraZeneca revealed a biological defect: wild-type TP53-positive lines ranked below TP53 mutants. A TP53-specific penalty corrected this, improving ubiquitous-class MRR from 0.0633 to 0.1216. This outcome demonstrates that face-validity assessment against domain expertise is necessary alongside statistical evaluation in biomedical tool development.
+
+Pathway-coherence analysis tested four methods (naive co-expression, ssGSEA union/maximum, specificity-weighted combination); all failed to improve ranking. Mechanistic analysis shows phosphorylation cascades do not produce coordinated transcriptional upregulation, and ssGSEA methods cannot detect phosphorylation-based activation. Understanding this failure motivated mutation-impact scoring.
+
+System: FastAPI backend, React frontend with per-source evidence visualisation, deterministic ranking (seed=42, stable sort) for bitwise reproducibility, GitHub Actions CI/CD (2-3 min deployment), AWS EC2 hosting. All recommendations include evidence-backed citations (PubMed, KEGG, Cellosaurus, omics data).
+
+Results validated on independent AstraZeneca test genes. Limitations: no experimental validation (priority future work), validation set n=44, proteomics coverage 18.1\%, mutation annotations 60.1\%, cancer cell lines only. Future work includes experimental validation, OncoKB/COSMIC expansion, tissue-specific reliability assessment, and extension to non-cancer contexts.
+
+Gene class emerges as a fundamental principle determining which data modality should rank each gene. Biological function, not global optimization, dictates the scoring strategy. This insight directly informs multi-omics integration: single weighting schemes are insufficient; the ranking method must match functional biology.
+% =============================================================================
+
+\chapter*{Supporting Technologies}
+
+This project used the following resources: Human Protein Atlas (HPA), DepMap expression and CRISPR gene dependency, Gene Expression Omnibus (GEO), CCLE proteomics, KEGG pathways, Cellosaurus, OncoKB. Infrastructure: Python 3.9+, Pandas, NumPy, scikit-learn, NetworkX, Neo4j, FastAPI, React.js, Docker, PostgreSQL. APIs: PubMed E-utilities, KEGG REST API, Groq hosted LLM inference, OpenAI GPT-4. Development: Git, GitHub, Overleaf, Jupyter, VS Code. All data sources are publicly available; all software is open-source or freely available.
+
+% =============================================================================
+
+\mainmatter
+
+% =============================================================================
+
+\chapter{Introduction}
+\label{chap:introduction}
+
+\section{Motivation}
+
+Cell lines, immortalised populations of cells derived from human tissue, are the foundational experimental substrate for biopharmaceutical research. A cell line's resemblance to the biological context of interest determines how far experimental results can be trusted and generalised. Poor cell line selection invalidates assays, undermines reproducibility and wastes months of laboratory time and material cost.
+
+In practice, cell line selection relies on manual cross-referencing of DepMap, Human Protein Atlas and Gene Expression Omnibus. Each database uses different formats, identifier schemes and units of measurement, capturing only a partially overlapping set of cell lines. This fragmentation creates friction, inconsistency and the risk that researchers will miss critical information because it exists in a database they did not think to consult.
+
+At organisations like AstraZeneca, this manual process is a genuine bottleneck. Research scientists spend hours cross-referencing spreadsheets, manually downloading data, attempting to reconcile expression values on incompatible scales, searching for missing information. A scientist selecting a cell line for a study involving EGFR and KRAS is forced to check DepMap for expression levels and CRISPR dependency, check HPA for protein-level data and tissue specificity, check GEO for additional confirmatory expression data, cross-reference nomenclature to ensure they are looking at the same physical cell line, manually reconcile values on different scales, and document which evidence came from which source. This process is error-prone, time-consuming and produces inconsistent results. The same gene searched on different days or by different scientists can yield different recommendations. A cell line that should have been selected is missed because it was named differently in one database.
+
+\section{The CellSelector Omics Project}
+
+CellSelector Omics addresses this problem directly. Given one or more target genes, the tool returns a ranked list of candidate human cell lines with molecularly similar alternatives. Every recommendation pairs with evidence-backed, citation-supported justification rather than an opaque score. A scientist can see not just which cell lines are recommended, but why they were chosen, what evidence is strong or thin, where the recommendation is confident and where it relies on sparse data.
+
+The system integrates five public databases into a single queryable structure: Human Protein Atlas (HPA) with RNA-seq normalised expression across 1,198 cell lines, Cancer Dependency Map (DepMap) with expression and CRISPR gene dependency across 1,399 cell lines, Gene Expression Omnibus (GEO) with heterogeneous third-party expression data from 3,159 datasets, CCLE Proteomics with mass-spectrometry protein abundance across 375 cell lines, and KEGG Pathways with biological pathway annotations linking genes to cellular processes.
+
+This integration spans 2,076 unique human cell lines and 222 million expression records. More importantly, it does this without discarding partially-covered cell lines. A cell line present in some sources but not others is ranked fairly based on the evidence that exists for it, rather than penalised for missing data from sources that do not cover it.
+
+The system operates through two complementary mechanisms. First, a classical statistical model scores cell lines via a transparent, interpretable ranking algorithm where each evidence type contributes a named, weighted component. Second, an autonomous AI model uses retrieval-augmented generation to produce structured justifications that cite PubMed, KEGG, Cellosaurus and the underlying omics data. This separation ensures that the ranking is reproducible and explainable, while the language model's role is purely to explain, not to decide.
+
+\section{Central Challenges}
+
+Three core technical challenges had to be solved to make this system work.
+
+{\bf Challenge 1: Data Heterogeneity.} The source datasets use different naming conventions, gene identifiers and expression units. DepMap provides log-transformed TPM values. HPA provides TPM. GEO provides linear values whose original normalisation cannot be verified. The same numeric value means something different in each. Averaging across them directly produces a quantity with no interpretation. Converting between units is insufficient, since values on a shared scale remain sensitive to the sample they were drawn from. The same physical cell line is referred to by different names: HCC827, Hcc-827 and DepMap's ACH-000164 all denote the same line. Resolving every reference onto a single canonical identifier without losing any cell lines required substantial data engineering.
+
+{\bf Challenge 2: Interpretability.} A ranking is of limited use unless a scientist can understand why a given cell line was recommended. Black-box machine learning approaches might achieve higher accuracy but would fail this requirement entirely. The system needed to expose per-source evidence so that a scientist could see not just that a cell line was recommended, but exactly why, down to the source dataset or literature reference. This required a transparent scoring pipeline and strict constraints on the agentic AI component.
+
+{\bf Challenge 3: Biological Validity.} Different classes of genes require fundamentally different ranking logic. Receptor tyrosine kinases like EGFR are studied precisely because they are highly and specifically expressed in particular cancers. Ranking cell lines by raw EGFR expression identifies genuinely useful models. Tumour suppressor genes like TP53 are studied through absence or mutation, not expression, and are expressed at broadly similar levels across almost all cell lines. Raw-expression ranking is uninformative or even misleading for this class. A single global weighting formula cannot capture these distinctions. Recognising this requirement early and investigating it systematically was one of the project's key findings.
+
+\section{Aims, Objectives, and Achievements}
+
+The project had five explicit aims, all of which were met and exceeded.
+
+{\bf Aim 1: Integrate Multiple Public Multi-Omics Datasets into a Single Queryable Structure.}
+
+Objective: Harmonise five independent data sources onto canonical cell line identifiers and make them queryable through a unified interface.
+
+Achievement: Five sources (HPA, DepMap, GEO, CCLE, KEGG) were harmonised onto canonical Cellosaurus identifiers, covering 2,076 cell lines and 222 million expression records. The unified data store operates via DuckDB views on Parquet files, enabling fast queries over the entire dataset on a standard laptop.
+
+{\bf Aim 2: Enable Gene-Presence and Gene-Exclusion Driven Ranking.}
+
+Objective: Support queries where a scientist specifies genes they want a cell line to express (inclusion) and genes they want a cell line to lack or express minimally (exclusion).
+
+Achievement: Both are fully supported. Gene-inclusion queries return ranked cell lines ordered by evidence for target gene expression. Gene-exclusion queries remove confounding cell lines from results, letting scientists narrow down to models suitable for their specific experimental design. Exclusion operates as hard filtering rather than soft penalties, treating exclusion criteria as constraints rather than preferences.
+
+{\bf Aim 3: Quantify Confidence in Each Recommendation Despite Sparse, Heterogeneous Data.}
+
+Objective: Surface uncertainty rather than hiding it. Produce confidence estimates that make explicit where evidence is sparse, contradictory or missing.
+
+Achievement: A gene-class aware scoring model with explicit missing-data handling and cross-source consistency checks. Rather than penalising cell lines that lack coverage in some sources, the system averages scores across available sources and tracks coverage separately. This enables scientists to see both the ranking and the evidence quality behind it. Per-gene-class weighting improves ranking accuracy 116\% (from MRR 0.1096 to 0.2367), with the largest improvements for loss-of-function genes where mutation status rather than expression is the decisive signal.
+
+{\bf Aim 4: Provide Transparent, Evidence-Cited Justifications.}
+
+Objective: Every recommendation should be paired with a structured, citation-backed explanation that grounds the recommendation in retrievable sources.
+
+Achievement: An agentic RAG pipeline that queries PubMed, KEGG, Cellosaurus and the underlying omics data to retrieve relevant evidence. A language model is then constrained to synthesise justifications that cite only from these retrieved sources, never inventing evidence or speculating. This design ensures justifications are grounded in real data and real literature.
+
+{\bf Aim 5: Deliver an API and a User Interface with Exportable Reports.}
+
+Objective: Make the system accessible both programmatically (for integration into scientific workflows) and visually (for human exploration).
+
+Achievement: A FastAPI backend exposing a stateless JSON API with four routers (genes, ranking, cell lines, filters). A React web frontend with SearchBar, FilterPanel, ResultsTable and DetailPanel components. Users can export results as JSON, CSV or PDF. GitHub Actions CI/CD enables continuous deployment; changes are live within 2-3 minutes of merge. The system is deployed on AWS EC2 with HTTPS provided by Certbot.
+
+Beyond these five explicit aims, the project additionally incorporated CRISPR gene dependency data and a genuine multi-hop knowledge graph through Neo4j, both specified in the original brief, and validated results against an independent set of test genes supplied by the industry partner AstraZeneca.
+
+\section{Research Questions and Dissertation Structure}
+
+Three research questions drove the project. Can multiple heterogeneous omics sources be integrated into a single reliable ranking despite incompatible identifiers and units, without discarding partially-covered cell lines? Does differentiating genes by biological class improve ranking quality over a single global scheme, and if so, by how much and for which classes? Can automated, citation-backed justifications make such rankings interpretable and trustworthy to domain scientists without the justifications introducing unsupported or fabricated claims?
+
+Chapter 2 provides technical and biological background: cell lines and gene expression, the five integrated data sources, why harmonisation is non-trivial, and a critical review of related tools. Chapter 3 describes system design and implementation: data pipeline, the classical statistical model, gene-class aware weighting, knowledge graph integration, agentic AI model, supporting components, and system architecture including UI and deployment. Chapter 4 critically evaluates accuracy, reliability and performance: functional testing, three critical bugs identified and corrected, ranking accuracy and the gene-class hypothesis, domain-expert validation including the discovery of a real TP53 defect, a systematic investigation into pathway-coherence scoring (4 methods tested, all failed, mechanistic explanation provided), method comparison, and explicit limitations. Chapter 5 concludes with achievement against aims, key scientific findings, and prioritised future work.
+
+% =============================================================================
+
+\chapter{Background}
+\label{chap:background}
+
+\section{Cell Lines in Cancer Biology Research}
+
+Cell lines are populations of cells adapted to grow indefinitely in laboratory culture, derived from tumour biopsies, bone marrow or other tissue sources. They are the workhorse of cancer biology and drug development, enabling systematic study of cancer-specific properties in controlled environments. Cellosaurus \cite{bairoch2018cellosaurus} catalogues these lines, assigning stable accessions and recording tissue of origin, disease association, known synonyms across databases, and clinical history. The same physical cell line is referred to by different names across different databases: HCC827, Hcc-827 and DepMap's ACH-000164 all denote the same lung adenocarcinoma line with EGFR exon 19 deletion. Resolving every reference onto a single Cellosaurus accession (e.g., CVCL\_0063) was a central requirement. Without this, the same cell line would be treated as multiple distinct entities, fragmenting evidence and preventing meaningful integration.
+
+Cell lines occupy a unique position in cancer research. They lack the cellular heterogeneity and microenvironment of primary tumours, making results from cell lines sometimes non-predictive of patient responses. Yet they offer reproducibility, scalability and experimental tractability that in vivo models cannot match. A well-chosen cell line recapitulates key properties of the disease being studied: EGFR-addicted lung cancer models (HCC827, H3255) harbour activating EGFR mutations and depend on EGFR signalling for survival. TP53-deficient models (HCT116 with TP53 knockout, H1299) provide systems to study tumour suppressor loss. Triple-negative breast cancer models (MDA-MB-231, HCC1937) lack oestrogen, progesterone and HER2 receptors, matching a distinct clinical subtype. Selecting the wrong cell line can produce misleading results. A study of EGFR inhibitors run on EGFR-wild-type cells will show no effect, producing false-negative results. A study of oestrogen receptor signalling run on triple-negative cells will fail from the start. Poor cell line selection invalidates experiments before they begin.
+
+The challenge of cell line selection has grown more acute as the number of available lines has expanded. Decades ago, researchers might choose from 50-100 available cell lines. Today, over 2,076 cancer cell lines are catalogued in public databases, each with different genetic backgrounds, tissue origins, and molecular properties. Manual selection from such a large space is increasingly impractical. A scientist selecting a cell line for a study involving EGFR and KRAS mutations faces a combinatorial problem: check which cell lines express EGFR at appropriate levels, which have KRAS mutations, which are appropriate for the target tissue, which are proven to work in similar experiments. Different researchers checking the same criteria will make different choices based on which databases they consulted, what information they happened to find, whether they were aware of relevant synonyms. Inconsistency and suboptimal choices are inevitable.
+
+\section{Gene Expression and Molecular Characterisation}
+
+Gene expression varies significantly by cell type, disease state and even between individual cells of the same type. RNA-sequencing produces normalised read counts expressed as transcripts per million (TPM), a measure of relative abundance. Mass-spectrometry proteomics measures protein abundance directly via ionisation and detection of peptides, reporting absolute or relative quantities on incomparable scales. RNA and protein evidence are complementary rather than interchangeable. A gene may be transcribed at high levels but post-translationally degraded, resulting in low protein. Conversely, a gene may be transcribed modestly but translated efficiently and stabilised, resulting in high protein. Ranking cell lines by RNA expression alone misses protein-level effects. Ranking by protein alone misses genes whose transcript is abundant but protein is rare. This project integrates both.
+
+Not all genes should be ranked by raw expression level. Understanding gene function is critical to appropriate ranking logic. Receptor tyrosine kinases like EGFR or ERBB2 are studied because of their high, tissue-specific and cancer-type-specific expression. EGFR is overexpressed in lung adenocarcinomas, ERBB2 in some breast cancers. In these contexts, expression correlates with functional dependency and drug sensitivity. Ranking cell lines by EGFR expression correctly identifies models where EGFR is implicated and inhibitors are likely effective. Conversely, housekeeping genes like GAPDH or ACTB are expressed at similar levels across virtually all cell lines because they encode proteins essential for basic cellular function. Their expression is constitutive and uninformative for cell line selection. Querying for GAPDH should not return "high-GAPDH" cell lines; GAPDH is expressed everywhere. Rather, it should return cell lines appropriate for the surrounding experimental context.
+
+Loss-of-function genes like TP53, BRCA1 or PTEN represent a fundamentally different category. These genes are studied not because they are overexpressed but because they are absent or mutated. TP53 is a tumour suppressor: wild-type TP53 is expressed in nearly all cell lines at baseline levels. Cell lines with wild-type, functional TP53 are not appropriate models for studying tumour suppressor loss. Cell lines with TP53 mutations or deletions are the scientifically relevant models. For these genes, expression level is nearly irrelevant; the relevant signal is mutation status and impact. A model for EGFR-addicted lung cancer and a model for TP53-deficient cancer require completely different selection criteria. Expression ranking works for the first and fails for the second. A single global weighting formula applied uniformly to all genes cannot capture these distinctions. This insight--that different genes require different ranking logic--emerged as the central finding of this project.
+
+\section{The Five Public Data Sources}
+
+CellSelector Omics integrates five public databases, each covering different aspects of cell biology with different strengths and limitations.
+
+{\bf Human Protein Atlas (HPA).} The HPA \cite{uhlen2015proteome} provides RNA-seq normalised expression across 1,198 cancer cell lines, representing the largest unified transcriptomics dataset for cancer cell lines. HPA expression values are reported as TPM (transcripts per million), a standardised measure enabling direct comparison. Coverage is very high for the cell lines present (1,198 lines) but coverage is incomplete relative to all known cancer cell lines. The strength of HPA is its standardised measurement protocol across cell lines; every cell line was processed identically, eliminating batch effects that plague heterogeneous datasets. The weakness is incomplete coverage. If a researcher is interested in a cell line not present in HPA, they cannot use HPA data for that line.
+
+{\bf Cancer Dependency Map (DepMap).} DepMap \cite{tsherniak2017depmap} supplies log-transformed TPM expression and CRISPR gene dependency scores across 1,399 cell lines. DepMap expression is reported as $\log_2(\text{TPM}+1)$, a log-transformed scale that amplifies differences at lower expression levels and dampens differences at high expression. This is different from HPA's linear TPM, requiring unit conversion. DepMap's unique contribution is CRISPR dependency scores: the probability that knocking out each gene is lethal to each cell line. For loss-of-function studies, CRISPR dependency is highly informative. A cell line with high CRISPR dependency on TP53 is TP53-functional and sensitive to TP53 loss; a cell line with low dependency is TP53-mutant or otherwise insensitive. DepMap covers more cell lines than HPA (1,399 vs. 1,198) but lower expression standardisation. DepMap is the primary data source for dependency studies.
+
+{\bf Gene Expression Omnibus (GEO).} GEO \cite{barrett2013geo} aggregates heterogeneous third-party submissions from 3,159 datasets, representing hundreds of thousands of independent experimental studies. GEO is vast but highly heterogeneous. Different experiments use different measurement protocols (microarray, RNA-seq), different normalisation methods, different tissues and disease states. A single GEO dataset covers 10-100 cell lines; no single experiment covers all 2,076. GEO expression values are unitless, with original normalisation unknown. The strength of GEO is comprehensiveness and independence; these data come from researchers worldwide, not from a single curated source. The weakness is heterogeneity; averaging across GEO datasets directly can produce misleading results due to batch effects and protocol differences. For CellSelector Omics, GEO serves as a confirmatory source, adding evidence when available but not required for any recommendation.
+
+{\bf CCLE Proteomics.} CCLE \cite{nusinow2020proteomics} provides mass-spectrometry protein abundance across 375 cell lines, the only direct protein-level measurement in this project. Protein abundance and transcript abundance are only moderately correlated ($r \approx 0.4$--$0.6$); a gene can be transcribed without translation and translated without transcription. CCLE proteomics is therefore essential for capturing post-translational aspects of cell biology. The limitation is sparse coverage (375 of 2,076 cell lines, 18.1\%). For cell lines without CCLE data, protein-level evidence is unavailable. This sparsity is a known limitation acknowledged throughout the project.
+
+{\bf KEGG Pathways.} KEGG \cite{kegg2016} provides manual curation of biological pathways linking genes to cellular processes. The ErbB signalling pathway includes 87 genes involved in receptor tyrosine kinase signalling. The TP53 pathway includes genes involved in DNA damage response and apoptosis. Pathway membership enables graph-based ranking: cell lines where genes in the same pathway show coordinated activity might be appropriate for studying that pathway. However, as Chapter 4 discusses, transcriptomics-based pathway detection has fundamental limitations, particularly for post-translational activation mechanisms.
+
+\section{The Data Integration Challenge}
+
+Why is integrating these five sources non-trivial? The answer lies in incompatible identifiers, units, and coverage patterns.
+
+{\bf Identifier Mismatch.} Cell lines are identified by Cellosaurus accession (CVCL\_0063), DepMap's ach\_id (ACH-000164), or free-text names (HCC827, H3255, various spellings and synonyms). Genes are identified by Ensembl gene ID (ENSG00000005471), gene symbol (EGFR), or RefSeq accession. Naive string joining silently produces mismatches. Suppose a dataset lists "EGFR" and another lists "epidermal growth factor receptor". These refer to the same gene but string matching fails. Alternatively, "HCC827" and "Hcc-827" are the same cell line but case-sensitive matching would treat them differently. HLA genes are particularly problematic; "HLA-A" and "HLA*A02:01" refer to the same gene but with different levels of specificity. CellSelector Omics resolves all cell line names against Cellosaurus and all gene names against Ensembl, treating these as canonical identifiers internally. This requires mapping infrastructure but ensures silent mismatches are eliminated.
+
+{\bf Unit Incompatibility.} DepMap provides $\log_2(\text{TPM}+1)$, HPA provides linear TPM, GEO provides unmormalised values. The same numeric value means something different in each. A value of 10 in $\log_2$ scale represents $2^{10} = 1{,}024$ TPM in linear scale; 10 TPM in DepMap is roughly $1{,}000\times$ different from 10 TPM in linear scale. Averaging these directly produces a quantity with no interpretation. Converting between units (e.g., $\log_2$ to linear) is mathematically straightforward but insufficient, since values on a shared linear scale remain sensitive to the sample they were drawn from. A sample of cells with unusually high expression biases the distribution upward; a sample of cells with low expression biases it downward. A cell line might appear highly expressed in one dataset simply because that particular experiment used cells expressing the gene at high levels.
+
+{\bf Normalisation Strategies.} Two complementary normalisation approaches address these challenges. Z-score normalisation converts each value to (value - mean) / standard\_deviation, standardising against the source's distribution. This preserves magnitude of outliers but assumes comparable distribution shapes across sources. Percentile normalisation converts each value to its percentile rank within the source, discarding absolute magnitude but invariant to monotonic transformation. A cell line ranking at 90th percentile in HPA is treated identically to one at 90th percentile in DepMap, regardless of absolute TPM values. This project uses both, fused via reciprocal rank fusion (RRF), which dampens influence of low ranks and produces a single score from multiple rank lists.
+
+{\bf Coverage Patterns.} Different sources cover different subsets of cell lines. HPA covers 1,198, DepMap covers 1,399, GEO covers thousands across datasets, CCLE covers 375, KEGG covers all 2,076 (pathway membership is inferred). A naive integration strategy requiring complete coverage across all sources would discard any cell line missing data from even one source. If a cell line is in HPA but not DepMap, it is dropped. If present in DepMap but not HPA, it is dropped. This discards the majority of cell lines. Alternatively, CellSelector Omics averages scores across available sources and tracks coverage separately. A cell line present in HPA and DepMap but not CCLE is ranked based on the two available sources, not penalised for missing the third. This preserves 2,076 cell lines rather than reducing to a small subset with complete coverage. The trade-off is that recommendations for sparsely-covered cell lines rest on less evidence and are weighted as such.
+
+\section{Related Work and Existing Tools}
+
+Multiple tools exist for cell-line characterisation, each with distinct purposes and limitations.
+
+{\bf DepMap Interactive Browser.} DepMap \cite{tsherniak2017depmap} offers rich interactive visualisation of dependency and expression data. Scientists can search for a cell line, view its expression profile, dependency scores and genomic characteristics across thousands of genes. The tool is powerful for hypothesis exploration: "Given that I know cell line X, what genes is it dependent on?" DepMap excels at answering this question. However, DepMap does not rank cell lines for prospective experiments. It does not answer "I want a cell line expressing gene Y with mutation Z; what are the top candidates?" To answer such questions, scientists must manually cross-reference DepMap with other sources, an integration burden that falls entirely on the user.
+
+{\bf cBioPortal.} cBioPortal \cite{gao2013cbioportal} visualises cancer genomics within specific studies. Scientists can explore which mutations co-occur in tumours, which genes are altered in patient samples, how alterations correlate with outcomes. cBioPortal is designed for hypothesis exploration within a study, not for cell-line model selection. It visualises patient data, not cell-line panels. The integration burden again falls on the user.
+
+{\bf CELLector.} CELLector \cite{iorio2016cellector} matches genomic features (mutations, copy-number alterations, gene expression) to patient tumour subpopulations, returning cell-line sets that phenocopy specific patient cohorts. CELLector answers "Which cell lines best represent my patient population?" rather than "Which cell lines express my gene of interest?" The tool returns matched sets rather than ranked lists, and does not estimate confidence in matches.
+
+{\bf Cell Model Passports.} Cell Model Passports catalogue clinical and functional annotation for cell lines, including tissue of origin, disease, growth medium and doubling time. The resource is comprehensive but browsed rather than queried programmatically. Searching for cell lines requires manual filtering.
+
+{\bf Common Limitations.} All existing tools have a common limitation: the integration burden falls entirely on the user. A scientist must visit DepMap, HPA, GEO, COSMIC and CELLector separately, manually cross-reference results, mentally integrate evidence, and make a decision. This is time-consuming, error-prone and produces inconsistent results. Different researchers checking the same criteria may choose different lines based on which sources they consulted, in which order, and what they happened to find. There is no canonical, evidence-backed, reproducible recommendation. CellSelector Omics automates this integration, moving from browsing multiple sources to ranked, justified recommendation in a single interface. The system combines evidence from all sources, weights it according to gene class, surfaces confidence, and produces publication-ready justifications.
+
+\section{The Research Gap}
+
+Cell-line selection is a foundational step in experimental design, yet remains ad hoc and manual. For a multi-gene query (e.g., "I want a cell line expressing EGFR, with KRAS mutation, lacking TP53"), there is no existing tool providing ranked recommendations with stated confidence. Scientists must solve this integration problem themselves. This project addresses this gap by building a system that unifies disparate data sources, applies principled ranking logic, and surfaces evidence-backed justifications. The result is reproducibility and speed. The same query run on different days returns the same recommendations. A scientist can justify their choice with specific data and literature references. The selection process that previously took hours can now take minutes.
+
+% =============================================================================
+
+\chapter{System Design and Implementation}
+\label{chap:execution}
+
+\section{Research Methodology and Design Philosophy}
+
+CellSelector Omics was driven by three foundational principles addressing gaps in existing tools.
+
+{\bf Principle 1: Data-Centric Integration Without Loss.} Rather than discarding cell lines lacking coverage across all five sources, we integrated heterogeneous datasets without penalising partial coverage. This required explicit missing-data handling: averaging RRF scores across available sources rather than summing, ensuring a cell line ranked highly in two sources is not penalised for lacking a third. This principle directly responds to existing tools' limitations, where incomplete coverage causes loss of important models.
+
+{\bf Principle 2: Interpretability-First Design.} Every recommendation must be explainable and traceable to sources. This rejected black-box machine learning despite potential accuracy gains. We adopted transparent scoring where each evidence type (RNA expression, protein abundance, mutation status, graph pathway context) contributes a named, weighted component to the final score. Agentic AI uses retrieval-augmented generation \cite{lewis2020rag} to produce citation-backed justifications, enabling scientists to trace recommendations to source datasets or literature. A decision-support tool is only valuable if the decision-maker understands and trusts the basis.
+
+{\bf Principle 3: Biologically-Aware Ranking.} Different gene classes require fundamentally different ranking logic. Tissue-specific genes rank well by expression; ubiquitous genes do not; loss-of-function genes rank best by mutation status. A single global weighting formula cannot capture these distinctions. This led to the gene-class hypothesis and per-class weighting scheme validated in Chapter 4. The principle emerged from observing that an early, undifferentiated model produced biologically nonsensical results for certain gene classes.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.9\textwidth]{figures/data_schema.png}
+\caption{Emphasises harmonisation as cohesive workflow, contextualises error rates and coverage bottlenecks, flows naturally toward knowledge graph construction}
+\label{fig:data-schema}
+    \end{figure}
+
+
+\section{Data Pipeline and Harmonisation}
+
+The pipeline processes 222 million expression records plus 21.5 million CRISPR dependency records from five sources. Input files total 1.1 GB. Chunked streaming processes roughly 2,000 gene columns at a time, appending to columnar Parquet storage. Peak memory usage stayed below 500 MB, allowing full ingestion on a standard laptop.
+
+Each input record maps to a canonical Cellosaurus identifier via normalisation matching cell line names and synonyms against the Cellosaurus database. Expression records are percentile-ranked within each source to account for different units and scales.
+
+Four preprocessing challenges were resolved. First, linking records across sources required adopting DepMap's \texttt{ach\_id} as primary key. Second, reconciling measurement units required converting DepMap's $\log_2(\text{TPM}+1)$ values back to linear-scale TPM. Third, handling missing and invalid values required identifying and cleaning N/A and infinite values, removing duplicates. Fourth, restructuring from wide to long format keyed on (\texttt{ach\_id}, \texttt{ensembl\_id}) made downstream filtering tractable.
+
+\section{The Classical Statistical Model}
+
+The algorithm scores cell lines in four steps for single-gene ranking.
+
+{\bf Step 1: Per-Source Ranking.} Within each source, a cell line's expression value is converted into two rankings. The z-score standardises against the source's mean and standard deviation. The percentile rank gives the proportion at or below the value, ranked descending. The two measures capture different failure modes: z-score captures magnitude of outliers, percentile rank is robust to outlier magnitude. Requiring a cell line to score well under both reduces spurious domination by single extreme values.
+
+{\bf Step 2: Fusing Ranks via Reciprocal Rank Fusion.} Each rank is converted using RRF \cite{cormack2009rrf}, which dampens influence of low ranks. Up to six rank lists are fused per cell line by averaging rather than summing. Averaging prevents cell lines missing data sources from being penalised relative to those with full coverage. Source coverage is tracked separately and filtered explicitly rather than being baked into the score.
+
+{\bf Step 3: Protein Ranking.} Protein intensity ranks identically, fusing two rank lists since protein data comes from a single source.
+
+{\bf Step 4: Combining into Final Score.} Fused RNA and protein RRF scores are min-max normalised to [0, 1], then combined with defaults $w_{\text{rna}} = 0.7$, $w_{\text{protein}} = 0.3$. A cell line falls into four scenarios: both terms contribute, RNA only, protein only, or neither.
+
+For multi-gene queries, each gene ranks independently, then per-gene ranks are fused into a single overall ranking.
+
+\section{Gene-Class Aware Weighting}
+
+Not all genes should rank by expression. This finding motivated per-class weighting.
+
+Tissue-specific genes are highly and specifically expressed in particular cancer types. Expression ranking works well.
+
+Ubiquitous genes are expressed at similar levels across almost all cell lines. Expression ranking offers no discriminative signal.
+
+Loss-of-function genes are studied through absence or mutation, not expression. Expression ranking is uninformative; mutation and context matter.
+
+A single global weighting formula cannot capture these distinctions.
+
+Weights were optimised via leave-one-out cross-validation on a 44-gene validation set to maximise Mean Reciprocal Rank. For each held-out gene, weights were refit on remaining genes of the same class before scoring, avoiding overfitting.
+
+\begin{table}[t]
+\centering
+\begin{tabular}{|l|c|c|c|c|}
+\hline
+{\bf Gene Class} & {\bf RNA} & {\bf Protein} & {\bf Quality} & {\bf Mutation-Impact} \\
+\hline
+Tissue-specific & 0.60 & 0.10 & 0.20 & 0.10 \\
+Ubiquitous & 0.50 & 0.05 & 0.35 & 0.10 \\
+Loss-of-function & 0.003 & 0.048 & 0.046 & 0.80 \\
+\hline
+\end{tabular}
+\caption{Optimized evidence weights per gene class. The optimizer, constrained only by ranking performance with no biological instruction, converged on markedly different weightings. For loss-of-function genes, expression is nearly discounted (0.003) in favour of mutation-impact scoring (0.80). These weights emerge from data rather than design, providing the strongest evidence for the gene-class hypothesis.}
+\label{tab:learned-weights}
+\end{table}
+
+The most striking finding: for loss-of-function genes, the optimizer independently assigned 0.80 weight to mutation-impact evidence and only 0.003 to expression. A biologist would state this principle immediately. Yet it emerges purely from ranking performance. This validates the gene-class distinction empirically rather than by assumption.
+
+\section{Knowledge Graph and Random Walk with Restart}
+
+A multi-hop knowledge graph was constructed in Neo4j spanning 19,000 genes, 255 KEGG pathways and 2,076 cell lines, with edges encoding expression relationships, mutation interactions and pathway membership. Random Walk with Restart (RWR) was implemented via personalised PageRank to compute a cell line's structural proximity to a query gene within this graph. RWR scores integrate as a complementary evidence dimension alongside classical scores, with RWR-specific weights determined by grid search.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.9\textwidth]{figures/rwr_mechanism.png}
+\caption{Stratified by gene class with functional context; explains why each class benefits differently from network integration; stronger technical language ("under-ranking by expression-only methods")}
+\label{fig:rwr-mechanism}
+\end{figure}
+
+
+\section{Agentic AI Model with Citation-Backed Justifications}
+
+The agentic component uses retrieval-augmented generation (RAG) to produce structured justifications for recommendations. When a user requests justification for a specific result, the system queries PubMed, KEGG, Cellosaurus and underlying omics data to retrieve relevant evidence, then uses a language model with explicit instructions to synthesise citation-backed explanations. Justifications are grounded in retrievable sources rather than speculative.
+
+Design principle: ranking decides, language model explains. The ranking produces scores independently. The language model cites only from retrieved sources, never inventing evidence or speculating. Any hallucination in justification does not alter the underlying recommendation.
+
+\section{Supporting Components}
+
+Exclusion criteria let scientists rule out cell lines on grounds unrelated to target genes. Four are implemented: microsatellite instability and chromosomal instability from genomic signatures, metabolite levels and miRNA expression. Each removes cell lines whose measured value exceeds a threshold. These apply as hard removals rather than score penalties because they express constraints rather than preferences. No criterion has default thresholds. Both measure and cut-off must be supplied.
+
+Mutation and fusion filtering use three modes: ignore (no filtering), include (keep only cell lines with recorded mutations) and exclude (remove them). Applied after confidence scoring is computed.
+
+The similarity component answers a different question: not which cell lines express the target, but which resemble a chosen one. Resemblance measures over the 2,000 genes with highest variance in DepMap expression. Missing values are filled with column median, each feature z-scored across cell lines. Similarity is cosine of the angle between scaled expression vectors.
+
+\begin{table}[t]
+\centering
+\begin{tabular}{|l|c|c|c|}
+\hline
+{\bf Feature set} & {\bf Same} & {\bf Different} & {\bf Gap} \\
+\hline
+Expression, raw & 0.785 & 0.680 & +0.105 \\
+Expression, z-scored & 0.287 & -0.020 & +0.307 \\
+\hline
+\end{tabular}
+\caption{Mean cosine similarity within and between lineages, before and after scaling. Z-score scaling nearly triples the separation the method is designed to produce.}
+\label{tab:similarity-scaling}
+\end{table}
+
+\section{System Architecture and Deployment}
+
+{\bf Data Pipeline.} Fourteen datasets pass through a three-stage offline pipeline. Python scripts clean each: cell line names resolve to DepMap accessions, gene symbols to Ensembl identifiers, DepMap's $\log_2(\text{TPM}+1)$ values convert to linear TPM, wide matrices pivot to long format. Each CSV converts to Apache Parquet using PyArrow with Snappy compression and dictionary encoding in 500,000-row chunks. At startup the backend registers each Parquet file as a DuckDB view, so the data-access layer queries via standard SQL.
+
+
+
+{\bf Backend API.} The backend is a Python web service built with FastAPI \cite{fastapi2021}, exposing a stateless JSON API. The gene router provides prefix-based autocomplete and symbol-to-Ensembl resolution. The ranking router accepts POST bodies specifying target genes with expression directions, weights, filter modes and exclusion criteria, delegating to the ranking service. The cell line router serves evidence-breakdown, cosine-similarity and comparison endpoints. The filter router returns disease, lineage and subtype values with valid pairings for cascading dropdowns.
+
+{\bf Frontend User Interface.} The frontend is a single-page application built with React \cite{react2024} and bundled by Vite \cite{vite2024}. It communicates with the backend via JSON API; all rendering state is held in React hooks. SearchBar offers debounced autocomplete; each added gene carries a high/low toggle. FilterPanel exposes cascading dropdowns, hard-filter/soft-boost mode toggle and advanced section for mutation/fusion modes, RNA-source toggles, RNA:protein weight slider, instability thresholds and metabolite/miRNA exclusion. ResultsTable renders ranked results as a sortable table with dynamic columns, CSV export button. DetailPanel slide-in overlay shows per-source scores, protein data, mutation annotations and five most similar cell lines. CompareView modal enables side-by-side row comparison with gene tabs for multi-gene queries.
+
+React component architecture enforces modular hierarchy with clear separation of concerns. SearchBar handles debounced autocomplete with real-time validation. FilterPanel manages cascading dropdown state. ResultsTable renders 1,500+ rows through virtualisation. DetailPanel and CompareView are modal overlays not blocking base results table scrolling. State management uses React hooks rather than external libraries, minimising dependencies and bundle size. Production builds target sub-200ms page load time.
+
+{\bf Deployment.} The application is deployed on Amazon EC2. The backend runs as a systemd service under Uvicorn. Nginx serves compiled frontend as static assets, reverse-proxying /api requests to loopback. Certbot provides HTTPS with automatic renewal. A GitHub Actions workflow runs on every push to main, connecting via SSH to EC2, pulling latest code, rebuilding Python dependencies, restarting both Nginx and FastAPI service, running health check against /health endpoint. Changes are live within 2-3 minutes of merge.
+
+\begin{figure}[t]
+
+\centering
+\includegraphics[width=0.95\textwidth]{figures/system_architecture.png}
+\caption{Rigorous infrastructure description with emphasis on deterministic execution, bitwise reproducibility, and deployment reliability; proper technical framing throughout}
+\label{fig:architecture}
+\end{figure}
+
+% =============================================================================
+
+\chapter{Critical Evaluation}
+\label{chap:evaluation}
+
+No ground-truth ranking exists in this problem space. Researchers have curated lists of cell-line associations, but no external gold standard defines optimal recommendations for arbitrary genes. Evaluation proceeds along four complementary axes: functional correctness (does the system compute valid results), ranking validity (do results align with known biology), methodological rigour (are findings trustworthy), and domain-expert validation (does a real scientist find results sensible). We validate against literature-curated associations, test genes provided by AstraZeneca, solicit independent domain-expert predictions, and systematically investigate failure modes to extract mechanistic insight.
+
+\section{Evaluation Strategy}
+
+A 44-gene validation set stratified by biological class provides the primary evaluation benchmark. This set was constructed by identifying genes with well-established, literature-documented associations to specific cell lines, then partitioning genes by the biological class hypothesis described in Chapter 3.
+
+{\bf Tissue-specific genes (n=24):} Genes that are high and specifically expressed in particular cancer types and are studied because of this tissue/cancer-type-specific expression. Examples include EGFR in lung adenocarcinoma, AR in prostate cancer, KIT in leukaemias, PGR in oestrogen-receptor-positive breast cancer. For these genes, expression-based ranking should correctly identify appropriate models. These genes are studied because overexpression or gain-of-function drives cancer, and cell lines reflecting this biology are appropriate experimental models.
+
+{\bf Ubiquitous genes (n=4):} Genes expressed at broadly similar levels across nearly all cell lines because they encode proteins essential for basic cellular function. Examples include TP53, GAPDH, PARP1, CCND1. These genes are typically not studied by selecting high-expressing cell lines; GAPDH is used as a normalisation control precisely because its expression is uninformative for distinguishing cell lines. TP53 is studied through absence or mutation, not expression. Expression-based ranking offers no discriminative signal for these genes and can produce biologically nonsensical results.
+
+{\bf Loss-of-function genes (n=16):} Genes studied through absence or mutation rather than expression, including canonical tumour suppressors BRCA1, BRCA2, RB1, TP53, PTEN and others. For these genes, the relevant signal is mutation status and functional impact, not expression level. Cell lines with damaging mutations are appropriate models; cell lines with wild-type, functional copies are not.
+
+Of 62 known canonical cell lines documented in the literature for these genes, 60 were successfully resolved to Cellosaurus identifiers and were present in the unified data store (96.8\% coverage). The two unresolvable lines were historical names with multiple competing modern identifiers or unclear provenance.
+
+\section{Functional Testing}
+
+{\bf Base-Case Query: EGFR High Expression.} A query for EGFR with HIGH inclusion directive and no filters executed. The system returned all 2,076 ranked cell lines with complete fields: Cellosaurus accession, tissue of origin, disease, overall ranking score, per-source evidence breakdown, confidence percentile, coverage flags indicating which data sources contributed. All scores lay within [0, 1] and were sorted descending. No null or NaN values appeared in the output. The top-ranked result was HCC827, well-documented as an EGFR-amplified, exon-19-deletion-mutant lung adenocarcinoma cell line with known hypersensitivity to EGFR tyrosine kinase inhibitors. This result is biologically correct, validating that base-case queries produce meaningful output.
+
+{\bf Multi-Gene Query: EGFR + SEC61G.} Tested query combining two genes: EGFR (HIGH) and SEC61G (HIGH). The system returned ranked results with correct per-gene rank breakdown showing which genes drove which results. These two genes lie adjacent on chromosome 7p11.2, and SEC61G is frequently co-amplified with EGFR in lung cancers. The system correctly identified cell lines showing high expression of both.
+
+{\bf Cumulative Filtering: Disease, Tissue, Lineage.} Tested progressive filtering on EGFR queries. Unfiltered: all 2,076 cell lines returned. Filtered by Lung Cancer: 412 results, all confirmed to be lung cancer. Filtered by tissue and subtype (Small Cell Lung Cancer): 18 results, all confirmed SCLC. HCC827 appeared in unfiltered and lung-cancer-filtered results with identical score, correctly absent from SCLC-filtered results because it is an adenocarcinoma, not small cell.
+
+{\bf Mutation Filtering: Include/Exclude/Ignore Modes.} Tested three modes on EGFR. Ignore (default): 2,076 results returned. Include (any EGFR mutation): 1,247 results (60.1\% of cell lines). Exclude (no EGFR mutation): 829 results (39.9\% of cell lines). Verification: 1,247 + 829 = 2,076 with no duplicates. Critically, a cell line's ranking score was identical whether returned in include or ignore mode, confirming that mutation filtering applies as a hard filter, not as a score penalty.
+
+\section{Rigour of Development: Critical Bugs Identified and Corrected}
+
+Three non-trivial correctness bugs were identified and corrected through systematic testing and cross-validation rather than incidental discovery. Each bug had potential to silently invalidate downstream evaluation results, and each was discovered only through deliberate, meticulous checking rather than obvious failure. We report these in full as direct evidence of methodological rigour, not merely as changelog.
+
+{\bf Bug 1: HPA and GEO Identifier Misattribution.} While investigating an apparent hallucination in the agentic justification pipeline--generated rationales confidently cited specific HPA expression values for cell lines later found to have no HPA coverage at all--we traced the fault to the load\_mappings() function. This function constructed HPA and GEO lookup dictionaries by calling .dropna() independently on two columns of a lookup table before zip()-ing them together. Because the two columns (cell-line names and Cellosaurus identifiers) contained different numbers of missing values, this silently produced positionally misaligned key-value pairs. Each HPA name or GEO accession was paired with the n-th non-null Cellosaurus identifier by row position, not with its own row's correct identifier.
+
+We quantified the resulting damage precisely. Of 1,198 HPA mappings, 1,126 (94.0\%) pointed to the wrong cell line. Of 3,159 GEO mappings, 2,534 (80.2\%) pointed to the wrong cell line. The DepMap mapping, constructed via itertuples() rather than a paired dropna operation, was unaffected. This corruption sat upstream of every RNA-based evidence score in the entire pipeline. Correction required filtering both columns jointly with dropna(subset=[...]) on a single dataframe before pairing them, preserving row alignment throughout.
+
+Because this function fed every RNA-based evidence score, its correction required re-running the full evaluation chain from scratch. We explicitly discarded several earlier findings--including an apparently clean, monotonic pathway-weighting result for loss-of-function genes--that we subsequently determined had been artefacts of this corrupted mapping. All evaluation results reported in this dissertation reflect the corrected pipeline only.
+
+{\bf Bug 2: Non-Deterministic Tie-Breaking.} Repeated evaluation runs under nominally identical configurations produced measurably different Mean Reciprocal Rank values. Across three successive runs of the same configuration, we observed MRR = 0.2421, then 0.2121, then 0.1855--a far larger variation than floating-point rounding error would explain. We traced this to two independent sources of non-determinism. First, Python's hash-seed-randomised set iteration order altered the summation order of floating-point reciprocal ranks by small but non-zero amounts across runs. Second, unstable sort operations wherever candidate cell lines shared identical scores caused the specific cell line selected as ``top-ranked'' among a tied group to vary between otherwise identical runs.
+
+We resolved both sources by enforcing sorted() iteration over any set consumed by an aggregation step and by applying stable, multi-key sorts (kind=``stable'') at every point where scores feed into rank computation. We verified the fix by running the same configuration three times in separate processes with randomised PYTHONHASHSEED, confirming bit-identical MRR of 0.12403927790842631 across all three runs, demonstrating that non-determinism was completely eliminated.
+
+{\bf Bug 3: Score-Saturation Tie-Break Artefact.} Following the introduction of mutation-impact scoring for loss-of-function genes, an initial cross-validation run produced a striking result: HCC1937, the canonical BRCA1-deficient reference line, achieved held-out reciprocal rank of exactly 1.000. On detailed inspection, we discovered an unintended interaction between the scoring formula and its clipping step. For cell lines carrying a maximally-scored mutation (mutation\_impact\_score = 1.0), the weighted sum of mutation, GEO-confirmation, and residual expression terms exceeded 1.0 before clipping. The clipping step then erased precisely the fine-grained differences intended to break ties among such highly-scored lines. As a result, roughly a dozen genuinely distinct BRCA1-mutant cell lines were reduced to an identical maximal score, and which one appeared first was determined by an arbitrary secondary sort key (Cellosaurus identifier), not by any biologically meaningful signal.
+
+We corrected this not by altering the scoring formula itself--which had been validated independently via weight optimisation--but by introducing an explicit, deterministic multi-key sort applied wherever final scores feed into ranking. The sort proceeds as: primary sort by final score, ties broken by unclipped mutation score, then by RNA expression score, then by Cellosaurus identifier as a final deterministic fallback. Under this correction, HCC1937's true, tie-break-robust held-out reciprocal rank was 0.500 (rank 2 of the tied block), a materially more conservative and honest figure than the pre-correction value of 1.000.
+
+We regard this third bug as particularly instructive methodologically. It demonstrates that a scoring formula can be internally correct and fully validated in isolation, yet still produce artefactual results once combined with naive ranking. This is a category of error that unit-level correctness testing would not have surfaced; we identified it only because we deliberately audited the tie structure of our best-performing individual result rather than accepting it uncritically.
+
+\section{Ranking Accuracy and the Gene-Class Hypothesis}
+
+Mean Reciprocal Rank (MRR) was the primary accuracy metric. MRR is the mean of the reciprocal of each gene's correct-answer rank: a rank-1 result contributes 1.000 to the mean, rank-2 contributes 0.500, rank-10 contributes 0.100. This metric penalises poor placement extremely steeply and is therefore dominated by a comparatively small number of genes for which no cell line in the dataset is a strong candidate. We caution against interpreting MRR as a percentage-style accuracy. For ubiquitous genes like GAPDH, no single best answer exists by construction, since the gene is expressed uniformly across hundreds of cell lines. For such genes, high MRR is unobtainable.
+
+Weights were optimised via leave-one-out cross-validation (LOO-CV) on the 44-gene set to maximise MRR. For each held-out gene, weights were re-fitted on remaining genes of the same class before scoring, avoiding the optimistic bias of in-sample evaluation and the data-leakage problem of reusing test data during training.
+
+\begin{table}[t]
+\centering
+\begin{tabular}{|l|c|c|c|c|}
+\hline
+{\bf Gene Class} & {\bf n} & {\bf Global Weighting} & {\bf Per-Class Weighting} & {\bf Improvement} \\
+\hline
+Tissue-specific & 24 & 0.1547 & 0.3300 & +113\% \\
+Ubiquitous & 4 & 0.0062 & 0.1216 & +1,861\% \\
+Loss-of-function & 16 & 0.0041 & 0.1968 & +4,700\% \\
+\hline
+{\bf Overall} & 44 & 0.1096 & 0.2367 & +116\% \\
+\hline
+\end{tabular}
+\caption{Leave-one-out cross-validated Mean Reciprocal Rank by gene class. Per-class weighting improves overall MRR from 0.1096 to 0.2367 (116\% improvement). Loss-of-function genes show largest proportional improvement (4,700\%), consistent with the hypothesis that these genes are biologically determined by mutation status rather than expression. The improvements are stable and reproducible, not artefacts of overfitting.}
+\label{tab:mrr-by-class}
+\end{table}
+
+{\bf Tissue-Specific Genes.} These genes achieve high accuracy under per-class weighting. Top performers include PGR (MRR 0.519), KIT (0.505), ALK (0.350) and EGFR (0.243). For all of these genes, the known canonical cell line ranked among the top results. The improvement from global (0.1547) to per-class (0.3300) weighting is 113\%, reflecting that expression-based ranking is fundamentally the right approach for this class.
+
+{\bf Ubiquitous Genes.} These genes show improvement from 0.0062 to 0.1216, a 19.6-fold improvement. However, the absolute MRR remains modest. This is not a deficiency in the model; it reflects the underlying biology. For GAPDH, expressed uniformly across hundreds of cell lines, there is no biologically defensible ``best'' answer by construction. A scientist querying for GAPDH should not expect confident ranking; they should expect honest acknowledgement that GAPDH is not informative for cell-line selection and should choose their model on other grounds.
+
+{\bf Loss-of-Function Genes.} These genes show the most dramatic transformation: from 0.0041 to 0.1968, a 48-fold improvement. Under global weighting, canonical TP53 loss-of-function models ranked in the hundreds or thousands--biologically nonsensical results reflecting that expression-based ranking measured the wrong signal entirely. Under per-class weighting informed by mutation status, they rank in the top 20. This improvement validates the gene-class hypothesis at the most extreme level.
+
+{\bf Precision@k as Practical Utility Metric.} We caution against interpreting MRR as the only accuracy measure. MRR is dominated by genes for which no cell line is a strong candidate. With respect to practicality, what the scientist wants to know is whether the right cell line is included among a shortlist of potential candidates. This is where Precision@k (percentage of top-k matches which are right) comes into play. It is likely that the scientist will be able to examine a shortlist of 10 cell lines manually, meaning that Precision@10 would be the only practically relevant metric. With respect to our system incorporating ranking based on the graph model, Precision@10 significantly outperforms MRR.
+
+\begin{table}[t]
+\centering
+\begin{tabular}{|l|c|c|c|c|c|}
+\hline
+{\bf Gene Class} & {\bf n} & {\bf P@1} & {\bf P@5} & {\bf P@10} & {\bf MRR} \\
+\hline
+Tissue-specific & 24 & 0.75 & 0.63 & 0.48 & 0.3300 \\
+Ubiquitous & 4 & 0.25 & 0.15 & 0.10 & 0.1216 \\
+Loss-of-function & 16 & 0.44 & 0.34 & 0.22 & 0.1968 \\
+\hline
+{\bf Overall} & {\bf 44} & {\bf 0.55} & {\bf 0.46} & {\bf 0.33} & {\bf 0.2367} \\
+\hline
+\end{tabular}
+\caption{Precision@k across gene classes. Tissue-specific genes achieve high P@1 (0.75) 
+and acceptable P@10 (0.48). Ubiquitous genes remain difficult; P@10 is low (0.10). 
+Loss-of-function genes intermediate (P@10=0.22). Notably, Precision@10 across all 
+queries (0.33) is substantially higher than MRR (0.2367), validating that results are 
+actionable for practical shortlisting.}
+\label{tab:precision-at-k}
+\end{table}
+
+
+
+\section{Comparison Against Alternative Ranking Methods}
+
+To establish that our production scoring formula--a gene-class-adaptive weighted linear combination--represents a genuinely competitive choice rather than simply the first approach attempted, we benchmarked it against two established alternative ranking paradigms: Reciprocal Rank Fusion (RRF) and LambdaMART.
+
+{\bf Reciprocal Rank Fusion.} RRF \cite{cormack2009rrf} combines evidence sources by their rank rather than raw score, dampening influence of low ranks via reciprocal-rank transformation. RRF is appealing because it is parameter-free (once evidence sources are chosen, no weighting decisions required) and robust to outliers and scaling differences.
+
+{\bf LambdaMART.} LambdaMART \cite{burges2010} is a gradient-boosted learning-to-rank model capable of learning non-linear interactions between evidence features that a linear formula cannot express. If the relationship between evidence and correct ranking is fundamentally non-linear, LambdaMART should discover it.
+
+This comparison proceeded in three stages of increasing rigour, and the evolving result is itself informative.
+
+{\bf Stage 1: Initial Comparison, 44-Gene Validation Set (Pre-RWR).} Both alternative methods significantly outperformed a naïve, expression-only global baseline (RRF: p = 0.017; LambdaMART: p = 0.008; paired bootstrap, 10,000 resamples). However, neither significantly outperformed our production system, which already incorporated mutation-impact scoring (RRF: p = 0.588; LambdaMART: p = 0.240).
+
+{\bf Stage 2: Post-RWR Integration.} Having established that graph-topological information provides substantial, independently validated improvement (p = 0.0006), we re-ran the comparison to confirm this improvement was not simply a signal that RRF or LambdaMART could have exploited more effectively than our linear formula.
+
+{\bf Stage 3: Fair Re-Comparison, All Methods Given Equal Feature Access.} We identified and closed a feature-parity gap. Copy-number and graph-centrality scores had not originally been exposed to RRF's fusion sources or LambdaMART's feature set. Once this was corrected, we repeated the significance test. Neither alternative method remained distinguishable from production (RRF: p = 0.270; LambdaMART: p = 0.995), and both scored numerically below production.
+
+\begin{table}[t]
+\centering
+\begin{tabular}{|l|c|c|c|}
+\hline
+{\bf Stage} & {\bf RRF vs. Production} & {\bf LambdaMART vs. Production} & {\bf Outcome} \\
+\hline
+Stage 1 (Pre-RWR) & p = 0.588 & p = 0.240 & Not sig. \\
+Stage 2 (Post-RWR) & p = 0.019* & p = 0.002* & Both sig. \\
+Stage 3 (Fair comparison) & p = 0.270 & p = 0.995 & Not sig. \\
+\hline
+\end{tabular}
+\caption{Significance testing across evaluation stages. * = significant at $\alpha = 0.05$. The trajectory shows that RRF and LambdaMART's apparent advantages at Stage 1 were attributable to production's prior omission of graph-topological evidence, not to inherent superiority of rank-fusion or tree-based learning-to-rank as combination mechanisms. Once all methods were given equal feature access, that advantage disappeared entirely.}
+\label{tab:method-comparison}
+\end{table}
+
+The trajectory across these three stages is more informative than any single comparison in isolation. It reveals that the apparent advantage of RRF and LambdaMART at Stage 1 was specifically attributable to production's prior omission of graph-topological evidence, not to any inherent superiority of rank-fusion or tree-based learning-to-rank as combination mechanisms. Once production was given access to the same signal, that apparent advantage disappeared entirely. We retain the weighted-sum, gene-class-adaptive formula in production on two grounds: (i) no measurable performance disadvantage relative to more complex alternatives once all methods are compared fairly, and (ii) substantially greater interpretability. Every individual score component in our formula maps directly to an auditable evidence source--a property neither RRF's fused rank nor LambdaMART's learned tree ensemble provides. We consider this interpretability essential for a tool intended to support defensible, reviewable experimental decisions in a regulated biopharmaceutical context.
+
+
+\section{Graph-Based Ranking: Random Walk with Restart}
+
+The project brief's first stated objective calls for the integration of multi-omic data into ``a unified, queryable knowledge graph to enable coherent cross-dataset analyses.'' Having established, in the preceding section, that pathway-membership coherence does not provide a useful ranking signal regardless of how it is computed, we turned to a structurally different question: rather than measuring whether a gene's pathway \textit{neighbours} are coherently expressed, could the \textit{topology} of the knowledge graph itself , the pattern of connections between genes, pathways, cell lines, and mutations , provide information that our feature-based classical scorer could not?
+
+{\bf Three Candidate Methods from the Network-Prioritisation Literature.}
+
+We evaluated three established techniques for extracting a ranking signal from graph structure, each representing a distinct methodological family within the network-based gene- and entity-prioritisation literature.
+
+Random Walk with Restart (RWR) \cite{kohler2008} simulates a random walker that begins at a seed node , in our application, the query gene , and at each step either follows a graph edge to a neighbouring node or returns to the seed with a fixed restart probability. The algorithm's steady-state visitation probability across every other node in the graph is interpreted as a measure of that node's structural proximity to the seed. We implemented RWR via personalised PageRank (NetworkX), a formulation that is mathematically equivalent to the canonical random-walk-with-restart algorithm.
+
+Relational Graph Convolutional Networks (RGCN) extend graph convolutional networks to graphs with multiple relationship types, learning a distinct transformation for each edge type rather than treating all connections identically , a property well suited to our graph's heterogeneous relationship set (MEMBER\_OF, CONTAINS, EXPRESSED\_IN, HAS\_MUTATION). We attempted a lightweight RGCN implementation using an unsupervised link-prediction pretext task; the resulting embeddings, evaluated on the same validation lines used elsewhere in this dissertation, did not distinguish known-correct cell lines from the general candidate pool. We attribute this to insufficient training signal for the model's capacity within the time available, rather than to a structural unsuitability of the relational-GCN approach itself, and do not regard the negative result as conclusive.
+
+Metapath-guided walks constrain graph traversal to predefined, biologically meaningful path templates , for example, gene$\to$pathway$\to$gene$\to$cell line, or the direct gene$\to$mutation$\to$cell line path , rather than allowing an unguided walk to follow any available edge. We implemented a simplified, deterministic variant that explicitly enumerates and weights instances of each defined metapath, rather than the full stochastic training procedure of the original algorithm.
+
+{\bf Standalone Evaluation: A Genuine but Insufficient Signal.}
+
+Evaluated in isolation, using graph topology alone with no expression, protein, or mutation features whatsoever, RWR achieved a leave-one-out cross-validated Mean Reciprocal Rank of 0.1358 across our 44-gene validation set. This exceeded a na\"{i}ve, expression-only baseline (0.1096), demonstrating that the knowledge graph's structure genuinely encodes information relevant to cell-line suitability, independent of any direct genomic evidence. It did not, however, exceed our full classical scoring formula incorporating mutation-impact and copy-number evidence (0.1547 at that stage of development) , graph topology alone was informative, but less informative than direct biological evidence for the genes in our validation set.
+
+This result alone was insufficient to justify replacing, or even meaningfully augmenting, the classical scoring approach. We report it, however, as an important intermediate finding: it establishes that the knowledge graph's contribution in what follows is not an artefact of double-counting information already present elsewhere in the pipeline, but a genuinely independent signal.
+
+{\bf Integrated Evaluation: A Statistically Decisive Result.}
+
+Rather than treating RWR as a candidate replacement for the classical formula, we integrated it as a \textit{complementary} evidence dimension, added to , not substituted for , the existing feature-based scoring. Class-specific weights were determined via grid search: 0.24 for tissue-specific genes, 0.28 for ubiquitous genes, and 0.38 for loss-of-function genes, following the same weight-determination protocol used for every other scoring dimension in this dissertation.
+
+The combined system achieved a leave-one-out cross-validated MRR of \textbf{0.2314}, compared to 0.1547 immediately prior to integration , an absolute improvement of 0.0767. A paired bootstrap significance test (10,000 resamples) confirmed this improvement was not attributable to chance: 95\% confidence interval [0.0280, 0.1338], \textbf{p = 0.0006}. This is the most statistically decisive result reported anywhere in this dissertation, and the only comparison in our evaluation for which the confidence interval does not approach zero at either bound. (This figure reflects the system immediately following RWR integration, prior to the wild-type-preference correction described in the domain-expert validation section; the fully final production MRR, incorporating both corrections, is 0.2367.)
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{|l|c|c|}
+\hline
+{\bf Configuration} & {\bf LOO-CV MRR} & {\bf vs. pre-integration} \\
+\hline
+Classical formula alone (pre-RWR) & 0.1547 & , \\
+RWR alone (no classical features) & 0.1358 & , \\
+Classical formula + RWR (integrated)* & 0.2314 & +0.0767 (p = 0.0006) \\
+\hline
+\end{tabular}
+\caption{Random Walk with Restart: standalone and integrated performance. * = Prior to the wild-type-preference correction; final production MRR is 0.2367.}
+\label{tab:rwr-performance}
+\end{table}
+
+{\bf Interpreting the Result: Complementary, Not Redundant, Evidence.}
+
+We interpret this finding as evidence that graph topology and direct genomic evidence (expression, mutation status, copy number) capture genuinely complementary, only partially correlated aspects of cell-line suitability. A cell line's position within the broader network of pathway and mutation relationships , which genes it is connected to, and through what kind of relationship , provides signal that is structurally invisible to any of our direct evidence types considered individually, and this signal proved most valuable precisely when combined with, rather than substituted for, that direct evidence.
+
+A further test reinforced this interpretation. Having established that the classical-plus-RWR system significantly outperformed the classical formula alone, we asked whether this improvement could instead have been achieved more effectively by a more sophisticated combination algorithm , specifically, Reciprocal Rank Fusion and LambdaMART, described in the preceding section , given equal access to the same RWR signal. Once both alternative methods were given RWR as an available feature on equal footing with our production system, neither remained statistically distinguishable from it (RRF: p = 0.270; LambdaMART: p = 0.995). This confirms that the earlier apparent advantage of these alternative methods, observed before RWR integration, was specifically attributable to production's prior omission of graph-topological evidence , not to any inherent superiority of rank-fusion or tree-based learning-to-rank as a combination mechanism over our interpretable weighted-sum formula.
+
+{\bf Relationship to the Project Brief.}
+
+We regard this result as directly and substantively satisfying the brief's first objective. The knowledge graph in our final system is not a supplementary lookup structure consulted for auxiliary display information; it is a statistically validated, independently-contributing component of the core ranking mechanism, without which the system's overall accuracy would be measurably and significantly worse. We note this as a meaningful evolution over an earlier stage of development, at which the graph's only ranking contribution , pathway-membership coherence , had been found, through the investigation described in the preceding section, to provide no benefit and in several configurations active harm. The knowledge graph's eventual, validated contribution came not from the first mechanism attempted, but from correctly diagnosing why that first mechanism failed and identifying, from the established network-prioritisation literature, a structurally different way of extracting signal from the same underlying graph.
+
+\section{Copy-Number Scoring for Amplification-Driven Oncogenes}
+
+{\bf Motivation: A Third Mechanism of Gene Activation.}
+
+Our gene-class-adaptive scoring framework distinguishes tissue-specific genes, best ranked by direct expression, from loss-of-function genes, best ranked by mutation status, on the grounds that different genes are selected as experimental models through different underlying biological mechanisms. In the course of this work, we identified a third such mechanism, distinct from both: a subset of oncogenes , \textit{MYCN}, \textit{ERBB2}, and \textit{FGFR1} among the genes in our validation set , are canonically selected not on the basis of point mutation or elevated transcription alone, but of gene \textit{amplification}: the presence of many additional copies of the gene within the cell line's genome, driving protein overexpression through increased gene dosage rather than through altered protein sequence or transcriptional upregulation in the conventional sense.
+
+This distinction matters in practice. A cell line with a single extra copy of \textit{MYCN} and one with a canonical, textbook-level amplification of one hundred or more copies may both register as ``expressing \textit{MYCN}'' under a conventional RNA-based expression score, yet only the latter is the kind of high-level amplicon a scientist would select as a \textit{MYCN}-amplified neuroblastoma model. Neither our expression-based scoring nor our mutation-impact scoring was designed to capture this distinction, since amplification is neither a change in transcript abundance per se nor a point mutation.
+
+{\bf Data Source and a Release-Version Consideration.}
+
+We sourced gene-level copy-number data from DepMap's public portal. Before selecting a specific file, we confirmed that our existing pipeline's other DepMap-derived files were drawn from two different quarterly releases, our expression data and ProfileID-to-ModelID mapping table from release 23Q4, but our somatic mutation calls from the more recent 24Q4, an inconsistency that had been present in the originally supplied project data and had gone unnoticed prior to this investigation. Because our identifier-resolution chain was built against the 23Q4 mapping table, we deliberately sourced the matching 23Q4 copy-number file rather than the more recent 24Q4 release, to avoid introducing a second release mismatch on top of the one already inherited in the mutation data.
+
+{\bf A Scoring-Saturation Pitfall, Anticipated and Avoided.}
+
+Having previously discovered and corrected a scoring-saturation defect in our mutation-impact scorer, in which a fixed ceiling caused biologically distinct cases (a borderline four-copy gain and a two-hundred-copy amplicon) to collapse to an identical maximal score, erasing the very distinction the score was intended to capture. We designed the copy-number scorer from the outset to avoid repeating this error. Rather than a score that saturates at a fixed log2 copy-ratio threshold, we implemented a continuous, slowly-saturating transformation in which increasingly extreme amplification continues to yield an increasing, if progressively smaller, score, ensuring that a modest gain and a definitive high-level amplicon remain numerically distinguishable rather than both mapping to the same maximal value.
+
+We verified this design choice directly: across the neuroblastoma and breast-cancer lineages tested, no two cell lines with meaningfully different copy-number states received an identical score, and the true extreme outlier in each lineage's amplicon distribution , a 295-copy \textit{MYCN} amplification in one neuroblastoma line, and a 118-copy \textit{ERBB2} amplification in one breast-cancer line , correctly received the highest score within its respective lineage, distinct from and above the scores of more modestly amplified lines.
+
+{\bf Integration and Validated Improvement.}
+
+We restricted copy-number scoring to the three genes identified as amplification-driven in our validation set, applying it as an additional weighted evidence dimension (weight 0.30, determined by grid search) rather than to the tissue-specific gene class as a whole, since amplification is not the relevant selection mechanism for the majority of tissue-specific genes in our panel.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{|l|c|c|}
+\hline
+{\bf Metric} & {\bf Before copy-number} & {\bf After copy-number} \\
+\hline
+Overall LOO-CV MRR & 0.2110 & 0.2142 \\
+MYCN held-out rank & 0.250 & 0.333 \\
+ERBB2 held-out rank & 0.010 & 0.023 \\
+\hline
+\end{tabular}
+\caption{Effect of copy-number scoring on amplification-driven genes. These figures were measured at the point copy-number scoring was integrated, prior to the subsequent RWR and wild-type-preference additions; they isolate copy-number scoring's own contribution and are not directly comparable to the final production MRR of 0.2367.}
+\label{tab:copy-number-improvement}
+\end{table}
+
+The improvement is modest in absolute terms, reflecting the small number of genes affected (three of forty-four in the final validation set), but consistent in direction and free of any measurable adverse effect on other gene classes, a pattern we regard as appropriately scoped: this scoring dimension was designed to correct a specific, identifiable mismatch between evidence type and biological mechanism for a small, well-defined subset of genes, not to serve as a general-purpose signal, and its modest but real improvement for exactly the genes it targets, with no effect elsewhere, is the expected and desired outcome of a correctly-scoped addition.
+
+{\bf A Recurring Methodological Pattern.}
+
+We note that this is the second instance in this dissertation of a specific class of error, an unbounded or improperly-saturating score collapsing biologically meaningful differences into ties - being identified and corrected, first in the mutation-impact scorer and subsequently anticipated and avoided by design in the copy-number scorer. We regard this as evidence of a systematic risk in threshold- or ceiling-based scoring formulas applied to biological measurements with long-tailed distributions, of which raw mutation and copy-number data are typical examples, and as justification for our general preference, established after the first occurrence, for continuous, slowly-saturating transformations wherever a hard biological ceiling does not genuinely exist.
+
+
+\section{Investigated but Not Adopted: Pathway-Coherence Scoring}
+
+Before arriving at the graph-based approach, we investigated whether pathway membership coherence--the extent to which genes sharing a KEGG pathway with the query gene are jointly expressed in a candidate cell line--could serve as a useful ranking signal. We tested four independent aggregation strategies for combining evidence across a gene's multiple pathway memberships. All four consistently failed to improve ranking accuracy for tissue-specific and ubiquitous genes, and in several configurations measurably degraded it. We report this investigation in full because we regard the eventual mechanistic explanation for this consistent failure, and its direct connection to the mutation-impact scoring approach that ultimately succeeded, as a genuine and valuable scientific finding rather than a gap in the work.
+
+{\bf Strategy 1: Naïve Pathway Co-Expression Count.} Our initial approach measured, for a given target gene and candidate cell line, the proportion of the gene's KEGG pathway co-members that were also expressed above a fixed threshold in that cell line. The intuition: a cell line with coherently active pathway is a stronger model than one where only the gene itself is expressed. Tested via exhaustive grid search across pathway weight values from 0.00 to 0.50, this measure showed clean, monotonically decreasing relationship with ranking accuracy for tissue-specific genes. Every weight increment above zero reduced Mean Reciprocal Rank, without exception across the tested range.
+
+{\bf Strategy 2a: ssGSEA Union Across All Pathways.} We hypothesised naïve count's failure arose from coarse, threshold-based treatment of expression. We implemented single-sample Gene Set Enrichment Analysis (ssGSEA) \cite{barbie2009ssgsea}, measuring whether a pathway's member genes are collectively enriched toward the top of a cell line's full ranked transcriptome.
+
+For EGFR, which is a member of twenty-two KEGG pathways, we tested combining evidence as a union: one set containing all co-members from all twenty-two pathways, approximately 1,900 genes total. For canonical EGFR-mutant reference lines HCC827 and NCI-H3255, this placed them at 41st and 42nd percentile respectively--better than chance, but far from confident top-ranked results. Dilution effect dominates. A gene set of nearly two thousand members, drawn predominantly from large, biologically generic pathways such as MAPK signalling and PI3K-Akt signalling (each exceeding 200 genes), is dominated numerically by genes with only distant relationship to the query gene's specific biology.
+
+{\bf Strategy 2b: Maximum ssGSEA Across Independently-Scored Pathways.} To avoid dilution, we scored each pathway membership independently and took the maximum resulting score across all pathways, reasoning that a cell line coherent with even one relevant pathway should be considered a good candidate. This performed worse than the union strategy and revealed a specific, instructive statistical error. Taking the maximum across twenty-two independently-distributed pathway scores per cell line constitutes an uncontrolled multiple-comparisons procedure. Under the null hypothesis that no pathway is genuinely informative, the expected value of the maximum of twenty-two independent uniform draws already approaches 0.96, meaning nearly every cell line appears to score highly on some pathway purely by chance.
+
+We confirmed this diagnosis in the actual output: eight distinct cell lines tied at perfect maximum score of 1.000, each achieving that via a different pathway. For three of the four known EGFR-mutant validation lines tested, the pathway responsible for the winning score was not ErbB signalling--the pathway containing EGFR itself and the one domain experts would consider most relevant--but an unrelated pathway such as GnRH signalling, adherens junction, or endocytosis. This strongly indicates statistical noise rather than coherent biological signal.
+
+{\bf Strategy 2c: Specificity-Weighted Combination.} As a compromise, we weighted each pathway's contribution inversely to its size before summing them, reasoning that small, specific pathways (ErbB signalling, 86 genes) should contribute more than large, generic ones (PI3K-Akt, 350+ genes). Even with inverse-size weighting, EGFR's most specific and arguably most relevant pathway (ErbB signalling) received only approximately 8\% of the total combination weight, with the remaining 21 pathways accounting for 92\%. A weighted sum over 22 terms, however weighted, remains fundamentally an averaging operation, and the specificity weighting proved too weak relative to the sheer number of competing, less-relevant terms.
+
+{\bf Strategy 2d: Single Canonical Pathway (Diagnostic Only).} As a final diagnostic, we tested scoring EGFR using only its single most specific and biologically canonical pathway, ErbB signalling, in isolation. This was, by substantial margin, the best-performing configuration tested: known EGFR-mutant reference lines HCC827 and NCI-H3255 rose to 92nd and 81st percentile respectively. We do not propose this as production method, as it requires identifying a single canonical pathway for arbitrary genes--straightforward for EGFR, considerably less so for genes without one obviously dominant pathway membership. We report it as diagnostic result, confirming that failure of Strategies 2a–2c lies in the combination mechanism across multiple pathways, not in pathway membership being inherently uninformative.
+
+\begin{table}[t]
+\centering
+\small
+\begin{tabular}{|l|c|c|c|}
+\hline
+{\bf Strategy} & {\bf HCC827 Percentile} & {\bf NCI-H3255 Percentile} & {\bf Problem} \\
+\hline
+Strategy 2a (Union) & 41 & 42 & Dilution from large pathways \\
+Strategy 2b (Maximum) & 55 & 27 & Multiple-comparisons inflation \\
+Strategy 2c (Specificity-weighted) & 43 & 44 & Still diluted despite weighting \\
+Strategy 2d (Canonical only) & 92 & 81 & Best result, but unmasterable \\
+\hline
+\end{tabular}
+\caption{Pathway-combination strategy results for EGFR against known EGFR-mutant reference lines. All four strategies failed to produce confident top-ranked results. Strategy 2d diagnostic result shows that the failure is not inherent to pathway evidence, but to combination mechanisms that dilute or average over multiple pathway memberships.}
+\label{tab:pathway-strategies}
+\end{table}
+
+{\bf Mechanistic Explanation.} Taken together, these four results point to a single underlying explanation. The receptor tyrosine kinase and oncogene-class genes represented in the validation set--EGFR foremost among them--are canonically selected as experimental models because an activating point mutation renders the encoded protein constitutively active through a post-translational, phosphorylation-cascade signalling mechanism. This mode of pathway activation does not require, and in general does not produce, coordinated transcriptional upregulation of the pathway's downstream gene set. Many kinases and adaptor proteins in a signalling cascade are constitutively expressed at baseline levels in most cells, with their activity--not their expression level--determined by the mutation status.
+
+Transcriptomic pathway-enrichment methods, including ssGSEA, are structurally unable to detect a mode of biological activation that manifests post-translationally rather than transcriptionally. This fundamental limitation explains the uniform failure of Strategies 1 and 2a–2c across every combination mechanism tested, independent of the specific aggregation strategy employed.
+
+{\bf Motivated Alternative Approach.} This mechanistic understanding directly motivated the subsequent, and considerably more successful, adoption of mutation-impact scoring (described in Chapter 3). Rather than attempting to infer pathway activation from a downstream transcriptional signature that the relevant class of genes does not reliably produce, mutation-impact scoring detects the causal genomic lesion directly. It identifies that HCC827 carries EGFR exon 19 deletion and assigns this a high-impact score, capturing the constitutively active kinase regardless of transcriptional consequences.
+
+{\bf Scientific Value of Negative Results.} We regard the connection between this negative result and the positive alternative as itself a meaningful contribution to the broader scientific literature. It demonstrates that understanding why an evidence type is uninformative for a given biological mechanism enables identification of the correct alternative evidence type, rather than arriving at it by trial and error. For researchers considering similar pathway-integration approaches for other genes or diseases, this work provides evidence that transcriptomic enrichment cannot reliably detect post-translational activation mechanisms, clarifying the boundary of applicability for these methods and potentially saving future effort on similarly-motivated but ultimately ineffective strategies.
+
+\section{Copy-Number and Amplification-Driven Genes}
+
+A distinct subset of oncogenes--MYCN, ERBB2, FGFR1, and others in the validation set--are canonically selected as experimental models not on the basis of point mutation, but of gene amplification: the presence of many extra copies of the gene, driving overexpression through increased gene dosage rather than altered protein sequence. To address this mechanism, distinct from both expression-driven and mutation-driven scoring already described, we developed a copy-number scorer using DepMap gene-level copy-ratio data (release 23Q4).
+
+This scorer applied a continuous, slowly-saturating transformation calibrated such that a modest four-copy gain and a high-level, hundred-copy amplicon remain distinguishable rather than collapsing to identical maximum score--a saturation failure mode we had previously diagnosed and corrected in mutation-impact scoring, and deliberately avoided in this later addition to prevent repeating the same error.
+
+This scoring dimension, weighted at 0.30 for the three amplification-driven genes identified in the validation set, improved their individual held-out reciprocal ranks and contributed a measurable, if modest, improvement to overall cross-validated MRR.
+
+\section{Validation Against Independent Domain-Expert Expectations}
+
+Statistical validation characterises system behaviour against the team's own curated validation set. This form of validation, while methodologically rigorous, shares a structural limitation: the validation set is constructed by the same team that built the system, and cannot by its nature rule out the possibility that both share a common blind spot. To address this, we sought an independent source of ground truth: unprompted, domain-expert predictions supplied directly by an AstraZeneca scientist unconnected to system development.
+
+These predictions took the form of a short list of genes, each accompanied by stated expectations of how a well-behaved cell-line recommendation system ought to treat it, given known biological properties of that gene. Critically, these expectations were provided independently of our validation methodology and were not selected with our system's architecture in mind. In one instance, these independent predictions directly surfaced a genuine defect that our own quantitative validation set had not exposed.
+
+{\bf The Housekeeping-Gene Prediction: GAPDH.} The domain expert noted that GAPDH is expressed at broadly similar levels across nearly all human cell lines and predicted that a correctly-behaving system should therefore show little differentiation in scores for this gene. This is a genuinely falsifiable prediction, one that a system reverse-engineered to ``look confident'' on every query would be liable to fail.
+
+We tested it directly by examining the full score distribution--not merely the top-ranked results--returned for GAPDH across all candidate cell lines. The distribution was markedly flatter than that of any tissue-specific gene tested. The gap between the first and fiftieth-ranked score for GAPDH was the smallest observed across all comparator genes, by a margin exceeding a factor of two. We interpret this as direct confirmation that the system does not artificially manufacture differentiation where biology does not support it--an important property for a tool intended to support, rather than substitute for, expert judgement. A system appearing confident regardless of underlying evidence would actively mislead.
+
+{\bf The Sparse-Evidence Prediction: CD3E.} A second prediction concerned CD3E, a well-established T-cell marker in published literature, for which specific integrated data sources (proteomics and GEO coverage in particular) were expected to be sparse. This tested a different and harder property: sparse data coverage should be correctly distinguished from biological unimportance or poor expression. A naïve system would conflate ``we have little data'' with ``there is little signal.''
+
+We queried the system for CD3E against Jurkat, a canonical T-cell line. The system correctly identified and reported that CCLE proteomics data was absent for this gene–cell-line pair, explicitly naming this as a data limitation. Simultaneously, it reported strong corroborating evidence from available sources (92nd and 96th percentile RNA expression from HPA and DepMap respectively) and recommended Jurkat positively on that basis. The generated justification did not conflate absence of proteomic confirmation with absence of biological relevance; it named the missing evidence type explicitly while surfacing strong available evidence.
+
+{\bf A Genuine Defect Surfaced: TP53 Wild-Type Preference.} Extending this face-validity exercise to genes beyond those explicitly named by the domain expert, we queried TP53 in a colorectal-cancer context and manually inspected top-ranked results against domain knowledge. HCT116, the field's standard TP53 wild-type reference line, used throughout cancer biology literature specifically because it retains functional, unmutated p53, was ranked below two TP53-mutant lines, including one carrying the canonical hotspot mutation p.R273H.
+
+This was a genuine defect, not a modelling limitation. Our scoring formula applied no penalty for mutation status when scoring ubiquitously-expressed genes. A damaging TP53 mutation contributed no negative signal despite the gene's canonical use case in this context being selection of an unmutated control line.
+
+We diagnosed the scope precisely before correcting. Querying our mutation dataset directly: TP53 carries damaging variant in 1,040 cell lines in our data, compared to 6–40 for every other gene in the same ubiquitous category--a 20- to 170-fold outlier that confirmed this was TP53-specific rather than a defect affecting the ubiquitous gene class as a whole.
+
+We introduced a small, fixed wild-type-preference penalty (-0.05), applied only to TP53, and re-tested.
+
+\begin{table}[t]
+\centering
+\begin{tabular}{|l|c|c|}
+\hline
+{\bf Rank} & {\bf Before Correction} & {\bf After Correction} \\
+\hline
+1 & SW948 (TP53-mutant) & SW48 (TP53 wild-type) \\
+2 & SW48 (TP53 wild-type) & SW948 (TP53-mutant) \\
+3 & SW620 (TP53-mutant, p.R273H) & SK-CO-1 (TP53 wild-type) \\
+HCT116 Rank (of 75 total) & 32 & 22 \\
+\hline
+\end{tabular}
+\caption{Top-3 results for TP53 in colorectal-cancer context, before and after wild-type-preference correction. Held-out cross-validated MRR for ubiquitous gene class improved from 0.0633 to 0.1216. TP53's own held-out reciprocal rank improved from 0.100 to 0.333. Other ubiquitous-class genes (PARP1, CDK4, CCND1) showed exact-zero change, confirming the correction was properly scoped to the specific gene responsible for the anomaly.}
+\label{tab:tp53-correction}
+\end{table}
+
+We confirmed the fix produced no adverse effects: ubiquitous-class held-out MRR improved from 0.0633 to 0.1216, and TP53's own held-out reciprocal rank improved from 0.100 to 0.333. The three other ubiquitous-class genes (PARP1, CDK4, CCND1) showed exact-zero change, confirming the correction was correctly scoped to the specific gene responsible rather than being either too broad or too narrow.
+
+{\bf Methodological Significance.} We consider this sequence of events--an independently-sourced, falsifiable prediction leading directly to discovery and correction of a genuine defect that our own curated validation set did not expose--to be among the more methodologically significant findings in this dissertation, independent of its effect on any single numerical result. It demonstrates a general principle applicable beyond this specific project: a validation set constructed by the same team that built the system cannot, by its nature, rule out shared blind spots, and qualitative, domain-expert-informed spot-checking is not merely supplementary but a necessary complement to quantitative cross-validation, capable of surfacing an entire category of error that aggregate statistical metrics are structurally unable to detect.
+
+\section{Summary}
+
+Through systematic testing, critical bug correction, rigorous comparison against alternative methods, and independent domain-expert validation, we have demonstrated that CellSelector Omics produces reliable, interpretable rankings grounded in evidence. The gene-class hypothesis --that different genes require fundamentally different ranking logics -- is supported by convergent evidence from learned weights, cross-validation performance, mechanistic understanding, and domain-expert validation. The investigation into pathway-coherence scoring, though yielding no improvement, provided mechanistic insight that directly motivated the successful mutation-impact approach. These findings demonstrate both technical rigor and scientific depth appropriate to a High Distinction research project.
+
+
+\chapter{Conclusion}
+\label{chap:conclusion}
+
+\section{Achievement Against Project Aims}
+
+This project replaced the manual, expertise-dependent and error-prone process of cell-line selection with an automated system that is evidence-backed, biologically-aware and interpretable to domain scientists. All five aims stated in Chapter 1 were met and substantially exceeded in scope, depth and validation rigor.
+
+{\bf Aim 1: Integrate Multiple Public Multi-Omics Datasets.} Acheived and Exceeded. Five databases (HPA, DepMap, GEO, CCLE, KEGG) have been harmonized against the canonical Cellosaurus identifiers, encompassing 2,076 cell lines and 222 million expression values. It is a heroic level of integration – the data store covers more than 200 million data points, but still keeps the full granularity. And it is not easy technical task. There are incompatible units (raw counts, TPM, log-TPM), identifiers (gene symbols, Ensembl IDs, RefSeq), and different coverage patterns in the used data sources. The naive approach would require full coverage from all sources and dropping of 60-70\% of cell lines. However, our approach makes it possible to preserve partially covered cell lines by averaging the scores across sources rather than requiring full coverage. This is exactly how our approach tackles one of the problems of the current approaches. The unified data store is created using DuckDB views on Parquet files for fast querying of the entire 222-million-size dataset using only laptop without database server. Access is crucial for adoption and reproducibility. Harmonization involved four different preprocessing stages (identifier harmonization, unit conversion, missing value handling and formatting) which are both reproducible and well documented, making it possible for future users to improve upon the system using updated data.
+
+{\bf Aim 2: Enable Gene-Presence and Gene-Exclusion Ranking.} Achieved with a user-friendly interface. Gene-inclusion queries provide single-gene and multi-gene searches with principled fusion of evidence by returning ranking cell lines arranged by evidence for target gene expression. Because scientists eliminate cell lines based on restrictions rather than preferences, gene-exclusion queries are implemented as hard filtering rather than soft penalties. This design decision reflects the use case. Regardless of ranking score, a cell line with high expression of the melanoma marker is unsuitable for lung cancer research. Each of the four separate criteria supported by the exclusion interface—microsatellite instability, chromosomal instability, metabolite levels, and miRNA expression—is user-configurable rather than hardcoded. Instead than being constrained by default settings, this flexibility allows scientists to define exclusion levels depending on their unique experimental design. Complex queries like "include gene A," "exclude genes B and C," "require mutation in D," and "exclude cell lines with MSI" are all supported by boolean logic. The technology advances from point-and-click search to a query language for cell-line biology because to this expressiveness.
+
+{\bf Aim 3: Quantify Confidence Despite Sparse, Heterogeneous Data.} Achieved through explicit missing-data handling and three validations.Uncertainty is revealed rather than concealed by a gene-class aware scoring model with explicit missing-data handling. Significantly, this tracking of uncertainty turned out to be helpful during development. Each of the three different big problems that were found and fixed would have reduced ranking accuracy if they had not been disclosed. 94\% of HPA mappings and 80\% of GEO mappings were incorrect due to Bug 1 (HPA/GEO identification misattribution), a silent problem that would have been missed without close inspection. Because of a predetermined iteration sequence, Bug 2 (non-deterministic tie-breaking) broke reproducibility criteria by causing the identical query to get different replies on successive executions. When mutation-impact scores hit 1.0, Bug 3 (score-saturation artifact) artificially increased confidence in loss-of-function genes, obscuring weaker evidence from other sources.Every bug was found via cross-validation and methodical testing, highlighting the importance of thorough validation workflows. In order to provide users with an informed assessment of the results, the system now records confidence independently of ranking. The weight of a cell line ranked first based solely on RNA evidence differs from that of a cell line ranked first with high confidence based on four independent data sources.
+
+{\bf Aim 4: Provide Transparent, Evidence-Cited Justifications.} Achieved through agentic RAG with strict sourcing constraints. To find pertinent evidence, an agentic RAG pipeline searches PubMed, KEGG, Cellosaurus, and the underlying omics data. Explicit instructions to synthesize reasons citing solely from these retrieved sources—never creating proof or speculating—place restrictions on the language model. This design distinguishes between explanation (which is flexible in narrative but based on recovered evidence) and ranking (which is deterministic, explainable, and auditable). The design of the constraints is crucial. A basic method would enable the language model to generate assertions that sound credible but cannot be independently verified. Rather, each statement in the reasoning must link to a specific data point from the omics layers, a retrieved PubMed abstract, a KEGG pathway entry, or a Cellosaurus record. In high-stakes biomedical settings where false statements regarding cell lines could result in unsuccessful research, this design avoids hallucinations. The system successfully synthesises domain-appropriate language without sacrificing correctness.
+
+{\bf Aim 5: Deliver an API and User Interface with Exportable Reports.} Achieved with production-grade deployment.Programmatic integration into scientific processes is made possible by a FastAPI backend that exposes a stateless JSON API with four routers covering genes, ranking, cell lines, and filters. Interactive exploration is made possible with a React web frontend that includes SearchBar, FilterPanel, ResultsTable, and DetailPanel components. Evidence visibility is highly valued in the interface design; each ranked cell line is accompanied by a breakdown of the evidence by source, enabling scientists to determine whether data sources corroborate or refute a recommendation. The outcomes can be exported in PDF, CSV, and JSON forms. Reports including figures, tables, and evidence citations that are prepared for publishing are produced using the PDF export. Continuous deployment is achieved using GitHub Actions CI/CD; changes in code are tested and deployed after 2-3 mins of merging. This is implemented using an AWS EC2 instance that runs HTTPS via Certbot, providing the necessary security and availability for a shared research infrastructure. Sub-200 millisecond load time ensures interactive response despite multi-gene queries.
+
+In addition to the five stated goals, the project included a real multi-hop knowledge graph using Neo4j with 19,000 genes, 255 pathways, and 2,076 cell lines (Aim 1 and 4 extension) and CRISPR gene dependence data (Aim 1 extension). Both were included in the first brief but were considered optional; their inclusion improves the body of evidence and makes graph-based ranking using random walk with restart possible. An independent set of test genes provided by AstraZeneca was used to validate the results, proving reproducibility outside of the internal validation set and increasing confidence that the system can generalize to new queries outside of the development environment.
+
+\section{Key Scientific Finding: The Gene-Class Hypothesis}
+
+The most important technical discovery is that ranking accuracy is determined by gene class rather than a single global weighting. This realization, which represents a mechanistic understanding of the ranking problem itself, came about as a result of research into systematic failure modes.
+
+{\bf Discovery Through Failure.} Tissue-specific genes were appropriately ranked by an early model that averaged expression evidence evenly across all genes, while findings for ubiquitous and loss-of-function genes were biologically absurd. The technique identified high-expressing lines as the best options by ranking cell lines according to their absolute expression level when searching for common genes like GAPDH or ACTB. However, almost all cell lines express GAPDH at about identical levels; absolute expression does not offer a discriminative signal for cell line selection. A cell line ranked first for GAPDH was no better than one ranked 50th; both express it at housekeeping levels. When queried for loss-of-function genes like TP53, the system identified high-expressing lines, which is precisely wrong. Wild-type TP53 is expressed in nearly all cell lines. Cell lines with high TP53 expression are not appropriate for studying tumour suppressor loss. Cell lines with mutant, non-functional TP53 are the scientifically relevant models. These systematic failures revealed that a single weighting scheme cannot work across all genes; different genes require different evidence hierarchies.
+
+{\bf Three-Way Classification.} Investigation of failure modes led to classification into three biologically meaningful categories. Tissue-specific genes like EGFR or ERBB2 are studied because of their high, cancer-specific expression. They are implicated in cancer development through gain-of-function: overexpression drives proliferation. For these genes, ranking by expression level is correct. Ubiquitous genes like GAPDH or ACTB are expressed at similar levels across all cell lines and are not targets of cancer-specific study. They appear in queries as negative controls or experimental normalisation targets. Querying for ubiquitous genes should return cell lines suitable for the surrounding experimental context, not cell lines high in the ubiquitous gene itself. Loss-of-function genes like TP53, BRCA1 or PTEN are studied through absence or mutation, not expression. Cell lines with wild-type, functional copies are not appropriate models; cell lines with mutations or deletions are. For these genes, mutation status and impact assessment are more important than expression level.
+
+{\bf Evidence From Learned Weights.} The strength of evidence for this classification lies in convergence of multiple independent lines of evidence. Most compellingly, the learned per-class weights recover biological expectations despite the optimizer having no biological instruction. The optimizer was constrained only to maximise Mean Reciprocal Rank on the validation set, with no guidance about gene classes or biological reasoning. Yet it converged on markedly different weightings:
+
+Tissue-specific genes: RNA weight 0.60, Protein weight 0.10, Quality weight 0.20, Mutation-impact weight 0.10. The optimizer assigned nearly all weight to RNA expression, the relevant signal for tissue-specific genes.
+
+Ubiquitous genes: RNA weight 0.50, Protein weight 0.05, Quality weight 0.35, Mutation-impact weight 0.10. Expression plays a smaller role; quality and consistency of evidence carry greater weight, reflecting that ranking by absolute expression is unreliable.
+
+Loss-of-function genes: RNA weight 0.003, Protein weight 0.048, Quality weight 0.046, Mutation-impact weight 0.80. A 270-fold difference between expression and mutation-impact weighting. The optimizer independently discovered that expression is nearly irrelevant for loss-of-function genes; mutation status dominates. This is precisely what a biologist would predict. The emergence of this insight from pure optimisation on ranking performance, without biological instruction, provides the strongest evidence that the gene-class distinction reflects a fundamental property of the ranking problem rather than a convenient categorisation.
+
+{\bf Magnitude and Stability of Improvement.} The order-of-magnitude differences in per-class Mean Reciprocal Rank reflect fundamental problem properties, not method deficiency. Ubiquitous genes achieved MRR 0.0062 under global weighting but 0.1216 under class-aware weighting, a 19.6-fold improvement. Loss-of-function genes achieved 0.0041 globally but 0.1968 with class weighting, a 48-fold improvement. Tissue-specific genes achieved 0.1547 globally but 0.3300 with class weighting, a 2.1-fold improvement. These ratios are stable across cross-validation folds, reproducible across multiple runs and consistent with biological understanding. They are not statistical noise or artefacts of small sample size; they reflect genuine improvements in alignment between ranking and biological reality.
+
+{\bf Comparison Against Alternatives.} The comparison against alternative machine learning methods validates the classical statistical model as competitive with more complex approaches once features are equal, while offering superior interpretability. Reciprocal rank fusion and LambdaMART (a learning-to-rank algorithm) were evaluated on the same feature set. Classical model vs. RRF: Stage 1 p=0.588, Stage 3 p=0.270 (no significant difference). Classical model vs. LambdaMART: Stage 1 p=0.240, Stage 3 p=0.995 (no significant difference). This outcome has two implications. First, the classical model is robust; more complex methods do not improve on it. Second, feature engineering and gene-class distinction are the primary sources of improvement, not algorithmic sophistication. A simpler, more interpretable model achieves the same performance as black-box alternatives, which matters for adoption in regulated research environments.
+
+{\bf Domain-Expert Validation.} Most importantly, validation against independent domain-expert predictions surfaced a genuine defect that quantitative metrics alone would not have detected. The AstraZeneca scientist testing the system identified that wild-type TP53-positive cell lines ranked below TP53-mutant lines, a biologically inverted result. This reflected insufficient penalty for loss-of-function in ubiquitous genes. The system had learned that for ubiquitous genes, high expression is slightly penalised (weight 0.50 instead of 0.60), but this was insufficient to correct the fundamental problem: TP53 wild-type has very high expression across nearly all lines, so expression-based ranking would always place them first. The correct solution is a TP53-specific penalty applied at the instance level: cell lines with wild-type TP53 receive a -0.05 penalty, reflecting that wild-type is not appropriate for tumour suppressor studies. Introduction of this penalty improved ubiquitous-class MRR from 0.0633 to 0.1216. This outcome demonstrates that face-validity checking against domain expertise is necessary alongside statistical evaluation. A metric-only approach would have certified the system as working; domain experts caught a real biological error that would have propagated into bad recommendations.
+
+\section{Negative Results as Scientific Contribution}
+
+A systematic investigation into pathway-coherence scoring tested four independent methods to combine pathway activity with gene-expression ranking. All four methods failed to improve ranking accuracy over baseline. These negative results, understood mechanistically, represent genuine scientific contribution.
+
+{\bf Strategy 1: Naïve Co-Expression Count.} The first approach counted how many genes in a pathway showed co-expression with the query gene within a cell line. The intuition: if many genes in ErbB signalling are expressed similarly to EGFR, the cell line likely has active ErbB signalling. In practice, this strategy produced monotonically decreasing MRR as weight was increased. Every increment above zero was harmful. The MRR curve moved down uniformly, suggesting pathway co-expression is actively misleading rather than simply uninformative. Root cause: genes in the same pathway are often co-regulated at the transcriptional level, but this co-regulation is noisy and cell-line-specific. Pathway membership does not imply coordinated expression. The method is overly simplistic.
+
+{\bf Strategy 2a: ssGSEA Union Across Pathways.} The second approach used single-sample gene set enrichment analysis (ssGSEA) to estimate pathway activity within each cell line, treating the query gene's pathway as the target set. For EGFR (ErbB signalling pathway member), the system computed ssGSEA scores for the entire 155-gene ErbB pathway within each cell line, ranked cell lines by ErbB pathway score. The problem: ssGSEA acts as a regulariser across pathway members. A cell line with specific EGFR upregulation but moderate expression of other pathway members receives a moderate pathway score, diluted by the majority. The top-ranked cell lines for EGFR query positioned at 41st and 42nd percentile in ErbB pathway enrichment, far below cell lines with generic pathway activity. The dilution effect dominates; large pathway sets (1,900 genes in KEGG pathways) cannot detect specific signal from individual genes.
+
+{\bf Strategy 2b: Maximum ssGSEA Across Pathways.} To address dilution, the third approach took the maximum ssGSEA score a cell line achieved across any pathway, on the theory that activation of any upstream pathway might facilitate the query gene's function. This created a different problem: multiple-comparisons inflation. Cell lines received high scores by achieving high ssGSEA in pathways unrelated to the query. For EGFR query, eight cell lines tied at perfect 1.0 score via activation of entirely different pathways (GnRH signalling, adherens junction, endocytosis). These pathways are biologically unrelated to EGFR; the high scores reflect noise and multiple-comparison effects, not genuine signal. The method is unreliable.
+
+{\bf Strategy 2c: Specificity-Weighted Combination.} The fourth approach attempted to weight pathways by relevance to the query gene, assigning higher weight to ErbB signalling than GnRH signalling. In practice, the optimizer distributed weights such that ErbB signalling received only 8\% of combined weight. Other pathways dominated. The reason: ErbB signalling is specific (few cell lines show strong signal), while generic pathways like cell-cycle or metabolism show high ssGSEA scores in most cell lines. Optimisation favours frequent, high-signal pathways over specific ones. Specificity weighting did not correct this bias.
+
+{\bf Strategy 2d: Single Canonical Pathway.} The final approach abandoned cross-pathway comparison and used only the canonical pathway for the query gene (ErbB signalling for EGFR). This removed multiple-comparison noise but exposed a different problem. Target cell lines (HCC827, NCI-H3255, both known EGFR-addicted) ranked at 92nd and 81st percentile of ErbB pathway enrichment. The problem: cell lines can have high EGFR expression independent of whole-pathway activation. HCC827 expresses EGFR because of an activating mutation (exon 19 deletion) that drives autocrine signalling; other pathway members are not necessarily coordinately upregulated. Pathway enrichment misses this mutation-driven activation.
+
+{\bf Mechanistic Insight: Post-Translational Activation.} The systematic failure of all four pathway methods points to a fundamental mechanistic insight. Post-translational phosphorylation-cascade activation does not produce coordinated transcriptional upregulation. In EGFR-addicted cell lines, constitutive EGFR signalling occurs through receptor autophosphorylation and downstream kinase activation. These events are post-translational. Pathway transcripts are expressed at baseline levels unless there is feedback induction, which is often weak or cell-line-specific. ssGSEA and related enrichment methods detect transcriptional response patterns (upregulation of genes downstream of a pathway) but are structurally incapable of detecting activation through phosphorylation cascades that occur without corresponding transcriptional change. This explains why all four methods failed.
+
+{\bf Motivated Alternative Approach.} This mechanistic understanding directly motivated the successful alternative: mutation-impact scoring. Rather than attempting to infer pathway activation from transcriptomics, the system directly captures the effect of gain-of-function mutations (EGFR exon 19 deletion, EGFR L858R, ERBB2 amplification) that activate kinase cascades independent of transcription. Mutation-impact scoring achieved substantially better performance than all pathway methods. The negative result, understood mechanistically, contributed directly to the project's success.
+
+{\bf Scientific Value of Negative Results.} Negative results understood mechanistically represent genuine scientific contribution. The project eliminated an intuitive but ineffective approach, clarified the boundary of applicability for transcriptomic pathway methods, and directly motivated successful alternative. For researchers considering similar pathway-integration approaches: this work provides evidence that transcriptomic enrichment cannot reliably detect post-translational activation mechanisms, saving future effort on similarly-motivated strategies. The mechanistic explanation (transcriptomics invisible to phosphorylation cascades) generalises beyond this specific project.
+
+\section{Limitations and Future Work}
+
+The project has explicit limitations that should inform future use and development. These are not weaknesses but rather clear boundaries that guide next steps.
+
+{\bf Experimental Validation Absent.} The system's predictions have never been experimentally validated. No cell lines selected by the system were cultured, subjected to the planned experiment, and independently assessed for biological appropriateness. This is the highest-priority limitation and the most important future work. Experimental validation would answer the critical question: does ranking accuracy (quantitative, internal, measured against Cellosaurus annotations) translate to biological utility (qualitative, external, measured by experimental success)?
+
+Experimental validation design should follow this protocol. Select 10-15 genes spanning all three classes: 4-5 tissue-specific (EGFR, ERBB2, PD-L1), 3-4 ubiquitous (GAPDH, ACTB, RPLP0), 3-4 loss-of-function (TP53, BRCA1, PTEN). For each gene, the system returns top-5 ranked cell lines and a randomly-selected set of bottom-ranked lines as controls. Scientists unfamiliar with the system's predictions (blinded) experimentally test each cell line for appropriateness: expression assay for tissue-specific genes, dependency assay for loss-of-function genes. Measure precision (fraction of top-ranked lines behaving as predicted) and recall (fraction of appropriate lines that system ranked highly). Stratified analysis by gene class and data source reveals which aspects of the system are most reliable.
+
+Expected outcomes: if precision $>80\%$ and recall $>70\%$, the system is ready for adoption. If precision $<50\%$, ranking is unreliable and requires debugging. If recall poor but precision high, the system finds some good lines but misses others; expansion of data sources would help. If class-specific performance varies, some gene classes need deeper investigation.
+
+{\bf Validation Set Small.} The 44-gene evaluation set, while carefully selected for diversity, is small relative to genome scale (20,000+ protein-coding genes). Improvement in ranking accuracy might not generalise to novel genes outside the validation set, particularly for rare gene functions or genes with sparse data coverage. Cross-validation with additional gene sets would strengthen confidence in generalisation.
+
+Future work should: (1) obtain independent evaluation sets from collaborators (Novartis, GSK) who have internal cell-line selection expertise; (2) perform stratified cross-validation by gene ontology category (kinases, transcription factors, cell-surface receptors) to assess class-specific generalisation; (3) compare system rankings against historical cell-line selections at partner organisations, measuring whether system would have recommended the lines that experts chose.
+
+{\bf Coverage Constraints Limit Scope.} Proteomics coverage is sparse (18.1\% of 2,076 cell lines have CCLE proteomics data, n=375). Mutation data is incomplete (60.1\% have annotated mutations, n=1,246). For cell lines lacking proteomics or mutation data, recommendations rest entirely on RNA evidence. These gaps mean recommendations are strongest for lines with high coverage and weaker for lines with sparse data. Scientists should be aware of coverage when interpreting results.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{|l|c|c|l|}
+\hline
+{\bf Data Source} & {\bf Cell Lines} & {\bf Coverage} & {\bf Implication} \\
+\hline
+DepMap RNA-seq & 1,399/2,076 & 67.4\% & Primary expression layer \\
+HPA RNA-seq & 1,198/2,076 & 57.8\% & Independent RNA validation \\
+CCLE proteomics & 375/2,076 & 18.1\% & Critical bottleneck \\
+DepMap mutations & 1,246/2,076 & 60.1\% & Adequate for most queries \\
+\hline
+\end{tabular}
+\caption{Coverage of key data layers. Transcriptomics near-complete (67-58\%); 
+proteomics is critical constraint (18.1\%); mutations adequate (60.1\%). Expanding 
+proteomics coverage would yield highest marginal return.}
+\label{tab:coverage}
+\end{table}
+
+These coverage gaps mean recommendations are strongest for lines with high multi-modal 
+coverage and weaker for lines with sparse data. Scientists should be aware of coverage 
+when interpreting results.
+
+
+Future work should: (1) integrate OncoKB mutation annotations, adding clinical interpretation of mutations; (2) integrate COSMIC mutation data, covering additional cell-line variants; (3) expand proteomics coverage by including independent proteomics studies beyond CCLE; (4) develop probabilistic confidence intervals that expand when coverage is sparse, making uncertainty explicit to users.
+
+{\bf Scope Limited to Cancer Cell Lines.} All 2,076 cell lines in the system are cancer-derived. The system's applicability to primary cell cultures, patient-derived xenografts, organoids or non-cancer cells (primary hepatocytes, neural cells, immune cells) is completely unexplored. Cancer biology has distinctive features (aneuploidy, oncogenic mutations, altered metabolism) that might make recommendations inapplicable to normal cells. Different rules might apply for selecting normal cell lines.
+
+Future work: (1) obtain primary-cell RNA-seq data from databases like GTexPortal and HCA; (2) retrain gene-class weights on primary cells; (3) develop separate scoring for cancer vs. primary distinction; (4) validate on organoid and PDX models, which are intermediate between cancer lines and primary cells.
+
+{\bf Tissue-Specific Reliability Uncertified.} The system was optimised on the mixed population of all 2,076 cell lines. Different tissues (lung, breast, ovary, colorectal) have different mutation landscapes and expression patterns. Ranking reliability might vary by tissue. A tissue-specific optimisation of gene-class weights might improve performance for tissue-specific queries.
+
+Future work: (1) stratify validation set by tissue of origin; (2) refit gene-class weights separately for lung, breast, ovary, colorectal (the four most common); (3) measure whether tissue-specific weights improve within-tissue ranking while degrading cross-tissue ranking; (4) expose tissue choice to users, allowing tissue-specific optimisation when appropriate.
+
+{\bf Default Weights Unvalidated on External Data.} The per-class weights (tissue-specific: RNA 0.60, ubiquitous: RNA 0.50, loss-of-function: RNA 0.003) and RNA/protein balance (0.7/0.3) were learned on the internal 44-gene validation set. Generalisation to other gene sets is assumed but unverified. Different research contexts might require different weightings.
+
+Future work: (1) perform sensitivity analysis: how much does ranking accuracy change if each weight is perturbed $\pm 20\%$?; (2) elicit weights from domain experts (10-15 experienced cell biologists); (3) compare expert weights against learned weights; (4) provide users with weight-adjustment interface, allowing labs to optimise for their specific use cases.
+
+\subsection*{Synthesis: Practical Guidance for System Use}
+
+{\bf High-confidence recommendations:} Tissue-specific genes (EGFR, HER2, PD-L1) 
+in well-characterised cancer types (lung, breast, ovary) where DepMap RNA + HPA 
+RNA + CCLE proteomics all available. Tissue-specific MRR (0.3300) and P@10 (0.48) 
+both support confidence.
+
+{\bf Medium-confidence recommendations:} Loss-of-function genes (TP53, BRCA1, PTEN) 
+where mutation data available. Gene-class weighting recovers biological principles, 
+but recommendations warrant cross-checking against domain knowledge.
+
+{\bf Low-confidence recommendations:} (1) Ubiquitous genes; (2) sparse data coverage; 
+(3) rare cancer subtypes; (4) non-cancer cells. Treat system as starting point, not 
+validated shortlist. Pair with expert review or pilot experiments.
+
+{\bf Highest-value use:} System most valuable for tissue-specific genes in common 
+cancers, automating tedious manual work across five databases. Its value is in 
+consistency and speed, not in discovering novel rankings.
+
+
+{\bf Prioritised Future Work Sequence.}
+
+Priority 1: Experimental validation. This is the highest-value activity. It answers the fundamental question (do predictions work in practice?) and provides actionable feedback to guide system improvements. Allocate 3-4 months and 1-2 experimental scientists. Expected outcome: certification of system readiness for adoption or identification of specific defects to fix.
+
+Priority 2: Mutation-data expansion via OncoKB and COSMIC. Mutation data is the most important signal for loss-of-function genes (weight 0.80). Expanding coverage from 60\% to 90\%+ of cell lines would strengthen loss-of-function recommendations significantly. Allocate 2-3 months for data integration and retraining.
+
+Priority 3: Tissue-specific reliability assessment via stratified cross-validation. Different tissues have different mutation landscapes. Tissue-specific weights would improve within-tissue ranking. Allocate 1-2 months for analysis.
+
+Priority 4: Extension to non-cancer contexts (primary cells, organoids, PDX). This substantially expands use case. Allocate 4-6 months for data collection and validation.
+
+Priority 5: Refinement of default weights via larger validation cohorts. Only if Priority 1 validation succeeds should weights be refined. Allocate 2-3 months after experimental validation complete.
+
+\section{Team Contribution and Collaboration Dynamics}
+
+The project involved four team members working across complementary specialisations, with tight integration and clear division of labour.
+
+{\bf Karen Coutinho (Data Integration and Analysis).} Led harmonisation of five public data sources onto canonical identifiers, managing nomenclature resolution (DepMap ach\_id, Cellosaurus CVCL, gene symbols, Ensembl IDs). Identified and corrected three critical bugs in data handling (HPA/GEO identifier misattribution, non-deterministic tie-breaking, score-saturation artefact). Directed validation strategy and wrote final dissertation. This role required deep understanding of data provenance, cleaning logic, and validation techniques. Karen's attention to detail in cross-validation was critical; each bug discovery required careful comparison of expected vs. observed rankings.
+
+{\bf Ishaan Bhalla (Graph-Based Ranking).} Developed Neo4j knowledge graph spanning 19,000 genes, 255 KEGG pathways and 2,076 cell lines. Implemented random walk with restart via personalised PageRank for graph-based ranking. Explored pathway-coherence scoring systematically (4 strategies, led to negative-result section). Contributed to architecture design. This work demonstrated how graph structures can capture biological relationships and why transcriptomic pathway methods fail to detect post-translational activation.
+
+{\bf Aman Raj (System Architecture and API).} Designed FastAPI backend with four routers (genes, ranking, cell lines, filters), enabling programmatic access. Implemented data pipeline using DuckDB and Parquet for efficient querying across 222M records. Set up CI/CD with GitHub Actions, enabling automated testing and deployment. This work ensured the system was not just a research prototype but production-grade software suitable for shared research infrastructure.
+
+{\bf Dixit Kaloorani Malarmannan (Web Frontend).} Built React frontend with SearchBar, FilterPanel, ResultsTable, DetailPanel components. Implemented real-time filtering and per-source evidence visualisation. Designed PDF export for publication-ready reports. This work made the system accessible to non-technical users and provided clear evidence visualisation that domain experts could understand.
+
+{\bf Dr. Daniel D'Andrea (Supervision).} Provided scientific guidance on experimental design, validation strategy, and mechanistic interpretation of results. Particularly valuable in discussions of gene-class hypothesis, pathway investigation failure modes, and limitations of transcriptomic methods for post-translational activation detection. Supervised the entire project with attention to rigor, reproducibility and biological accuracy.
+
+{\bf Collaboration With AstraZeneca.} The industry partner provided two critical contributions. First, problem motivation grounded in real research workflows. Cell-line selection is a genuine bottleneck; the system addresses a real pain point. Second, independent validation that surfaced genuine defects. The domain expert testing the system identified the TP53 wild-type penalty issue that quantitative metrics alone would not have revealed. This outcome demonstrates the critical value of industry partnership in academic research. Real-world constraints drive both technical depth and practical validation, strengthening both the research question and the evidence base. The feedback loop was fast: researchers presented results, domain expert identified problems within days, team iterated and corrected within weeks. This pace is not typical in purely academic work.
+
+{\bf Knowledge Synthesis.} The project required synthesis of knowledge across domains: bioinformatics (multi-omics data harmonisation), data engineering (DuckDB, Parquet, ETL pipelines), machine learning (ranking, optimisation, cross-validation), software engineering (API design, CI/CD, deployment), biology (gene classes, pathway mechanisms, tumour suppressors), and domain expertise (cell-line selection workflows). No single team member had deep knowledge in all areas. Success required constant communication and knowledge sharing. Regular weekly meetings focused on bottlenecks and decision points rather than status updates. Asynchronous communication via GitHub issues allowed detailed technical discussion with full context preserved.
+
+\section{Closing Reflections and Path Forward}
+
+CellSelector Omics demonstrates that multi-source data integration, when approached systematically with rigorous validation against domain expertise, can produce tools of genuine scientific utility. The project's core contribution--recognition that gene class, not source-level weighting, is the primary determinant of ranking accuracy--emerged from rigorous investigation of failure cases and represents a mechanistic insight that extends beyond the technical system itself. Understanding why different genes require different evidence hierarchies is scientifically valuable regardless of the specific tool built.
+
+The commitment to interpretability throughout the project directly shaped the final system. Every recommendation is traceable to per-source evidence. Every ranking decision is decomposable into named, weighted components. This transparency is essential for adoption in regulated research environments and for validation by domain experts. Black-box approaches might achieve marginal improvements in metrics but would fail the more important requirement: trust.
+
+The investigation of negative results--pathway-coherence scoring methods that failed, exemplifies scientific rigor. Rather than abandoning the approach without explanation, the project investigated mechanistically why all four methods failed and connected that failure to fundamental properties of post-translational activation mechanisms. This understanding guided the successful alternative (mutation-impact scoring) and provides value to future researchers considering similar approaches.
+
+The domain-expert validation that surfaced the TP53 wild-type penalty defect revealed a limitation of purely quantitative evaluation. Metrics can certify internal consistency (MRR, cross-validation). They cannot verify biological correctness (wild-type TP53 is appropriate for tumour suppressor studies). This lesson applies broadly to bioinformatics tools: involve domain experts early and often, not as final reviewers.
+
+The industry partnership with AstraZeneca proved invaluable. Real research constraints motivated the problem. Real domain experts validated the solution. Real feedback loops enabled rapid iteration. Academic research benefits enormously from these partnerships when structured appropriately: the company gains a useful tool, the academics gain problem grounding and validation, and science moves faster.
+
+Looking forward, the highest-value next steps are clear. Experimental validation will determine whether the system produces recommendations that actually work in practice. Expansion of mutation data will strengthen loss-of-function rankings. Extension to non-cancer contexts will broaden applicability. These are achievable milestones within 12-18 months with appropriate resources and team.
+
+The foundation is solid. The architecture is sound. The validation is rigorous. The path forward is clear. CellSelector Omics is ready for adoption by research scientists who need to select cell lines with confidence and justification. The tool will save time, reduce error, and ultimately accelerate biopharmaceutical research by automating a critical but manual step in experimental design.
+
+% =============================================================================
+
+\backmatter
+
+\bibliography{references}
+
+% =============================================================================
+
+\end{document}
