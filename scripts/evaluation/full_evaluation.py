@@ -3,9 +3,9 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-from models.classical.ranker import rank
-from models.classical.scorer import FIXED_WEIGHTS, classify_gene
-from models.classical.weights_learned import (
+from src.models.classical.ranker import rank
+from src.models.classical.scorer import FIXED_WEIGHTS, classify_gene
+from src.models.classical.weights_learned import (
     VALIDATION_SET,
     _apply_grid_search_pathway_weights,
     _apply_lof_mutation_weight,
@@ -13,7 +13,7 @@ from models.classical.weights_learned import (
     _precompute_scores,
     _run_optimisation,
 )
-from models.classical.scorer import load_mappings
+from src.models.classical.scorer import load_mappings
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Comprehensive comparison across four scoring configurations:
@@ -214,3 +214,4 @@ def run_full_evaluation() -> None:
 
 if __name__ == "__main__":
     run_full_evaluation()
+

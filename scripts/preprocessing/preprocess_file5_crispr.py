@@ -9,7 +9,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-from config import PROJECT_ROOT, PARQUET_DIR, SAMPLE_INFO, setup_dirs
+from config.config import PROJECT_ROOT, PARQUET_DIR, SAMPLE_INFO, setup_dirs
 
 CRISPR_DIR = PROJECT_ROOT / "data" / "crispr"
 DEPENDENCY_CSV = CRISPR_DIR / "CRISPRGeneDependency.csv"
@@ -215,3 +215,4 @@ def preprocess_crispr_dependency() -> pd.DataFrame:
 
 if __name__ == "__main__":
     df = preprocess_crispr_dependency()
+

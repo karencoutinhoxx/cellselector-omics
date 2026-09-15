@@ -1,7 +1,7 @@
 import pytest
-from models.classical.ranker import rank
-from models.classical.scorer import classify_gene
-from models.classical.weights_learned import VALIDATION_SET
+from src.models.classical.ranker import rank
+from src.models.classical.scorer import classify_gene
+from src.models.classical.weights_learned import VALIDATION_SET
 
 class TestValidationSet:
     """Test that the system handles all 25 validation genes."""
@@ -34,3 +34,4 @@ class TestValidationSet:
         assert found / total > 0.8, (
             f"Only {found}/{total} known associations found"
         )
+

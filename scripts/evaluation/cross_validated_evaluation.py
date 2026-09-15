@@ -5,16 +5,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 import numpy as np
 
-from config import OUTPUTS_DIR
-from models.classical.scorer import classify_gene, load_mappings, rank_sort
-from models.classical.copy_number_scorer import (
+from config.config import OUTPUTS_DIR
+from src.models.classical.scorer import classify_gene, load_mappings, rank_sort
+from src.models.classical.copy_number_scorer import (
     AMPLIFICATION_COPY_NUMBER_WEIGHT,
     AMPLIFICATION_DRIVEN_GENES,
     apply_amplification_copy_number_weight,
 )
-from models.classical.rwr_scorer import apply_rwr_weight
-from models.classical.ranker import WILD_TYPE_MUTATION_PENALTY, WILD_TYPE_PREFERRED_GENES
-from models.classical.weights_learned import (
+from src.models.classical.rwr_scorer import apply_rwr_weight
+from src.models.classical.ranker import WILD_TYPE_MUTATION_PENALTY, WILD_TYPE_PREFERRED_GENES
+from src.models.classical.weights_learned import (
     VALIDATION_SET,
     _GRID_SEARCH_PATHWAY_WEIGHTS,
     _LOF_PRODUCTION_MUTATION_WEIGHT,
@@ -230,3 +230,4 @@ def leave_one_out_evaluation():
 
 if __name__ == "__main__":
     leave_one_out_evaluation()
+

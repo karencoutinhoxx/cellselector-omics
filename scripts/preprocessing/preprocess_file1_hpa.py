@@ -8,7 +8,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-from config import FILES, PARQUET_DIR, setup_dirs
+from config.config import FILES, PARQUET_DIR, setup_dirs
 
 OUTPUT_NAME = "gene_expr_hpa_preprocessed.parquet"
 
@@ -138,3 +138,4 @@ def preprocess_file1() -> pd.DataFrame:
 
 if __name__ == "__main__":
     df = preprocess_file1()
+

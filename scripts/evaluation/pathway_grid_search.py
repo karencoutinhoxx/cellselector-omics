@@ -2,8 +2,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-from models.classical.scorer import classify_gene, load_mappings, rank_sort
-from models.classical.weights_learned import (
+from src.models.classical.scorer import classify_gene, load_mappings, rank_sort
+from src.models.classical.weights_learned import (
     VALIDATION_SET,
     _LOF_PRODUCTION_MUTATION_WEIGHT,
     _build_name_to_cvcl,
@@ -147,3 +147,4 @@ def grid_search_pathway_weight():
 
 if __name__ == "__main__":
     grid_search_pathway_weight()
+

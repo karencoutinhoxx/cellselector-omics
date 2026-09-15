@@ -14,7 +14,7 @@ from pathlib import Path
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from config import DOCS_DIR, PARQUET_DIR, setup_dirs
+from config.config import DOCS_DIR, PARQUET_DIR, setup_dirs
 
 # ── Separator detection ────────────────────────────────────────────────────────
 
@@ -246,3 +246,4 @@ if __name__ == "__main__":
         save=args.save,
         log=args.log,
     )
+

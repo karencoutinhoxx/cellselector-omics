@@ -10,7 +10,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-from config import FILES, OMICS_PROFILES, PARQUET_DIR, SAMPLE_INFO, setup_dirs
+from config.config import FILES, OMICS_PROFILES, PARQUET_DIR, SAMPLE_INFO, setup_dirs
 
 OUTPUT_NAME = "gene_expr_depmap_preprocessed.parquet"
 COL_CHUNK   = 2000   # gene columns loaded per CSV pass
@@ -214,3 +214,4 @@ def preprocess_file2() -> pd.DataFrame:
 
 if __name__ == "__main__":
     df = preprocess_file2()
+

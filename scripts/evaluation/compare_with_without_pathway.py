@@ -2,8 +2,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-from models.classical.ranker import rank
-from models.classical.weights_learned import VALIDATION_SET, _build_name_to_cvcl
+from src.models.classical.ranker import rank
+from src.models.classical.weights_learned import VALIDATION_SET, _build_name_to_cvcl
 
 # ─────────────────────────────────────────────────────────────────────────────
 # A/B comparison of scoring WITH and WITHOUT pathway_activity_score, isolating
@@ -74,3 +74,4 @@ def run_comparison() -> None:
 
 if __name__ == "__main__":
     run_comparison()
+

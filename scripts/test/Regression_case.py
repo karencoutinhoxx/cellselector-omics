@@ -1,7 +1,7 @@
 import pytest
 import math
 import json
-from models.classical.ranker import rank
+from src.models.classical.ranker import rank
 
 class TestNaNHandling:
     """Regression tests for NaN-related bugs."""
@@ -66,4 +66,5 @@ class TestGeneClassWeighting:
         # higher context score
         if len(with_context) > 0:
             assert with_context.iloc[0]["context_score"] > 0
+
 

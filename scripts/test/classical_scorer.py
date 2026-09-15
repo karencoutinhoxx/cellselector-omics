@@ -1,6 +1,6 @@
 import pytest
 import pandas as pd
-from models.classical.scorer import (
+from src.models.classical.scorer import (
     classify_gene, score_rna_expression, score_protein_expression,
     score_context, score_data_quality, load_mappings,
     get_gene_role, GENE_ROLES
@@ -91,5 +91,6 @@ class TestScoreContext:
         lung_row = result[result["cellosaurus_id"] == "CVCL_2063"]
         if len(lung_row) > 0:
             assert lung_row.iloc[0]["context_score"] == 0.5
+
 
 

@@ -3,9 +3,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from models.classical.ranker import rank
-from models.classical.scorer import classify_gene
-from models.classical.weights_learned import VALIDATION_SET, _build_name_to_cvcl
+from src.models.classical.ranker import rank
+from src.models.classical.scorer import classify_gene
+from src.models.classical.weights_learned import VALIDATION_SET, _build_name_to_cvcl
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Precision@k: does the correct answer appear anywhere in a realistic
@@ -94,3 +94,4 @@ def run_precision_evaluation():
 
 if __name__ == "__main__":
     run_precision_evaluation()
+

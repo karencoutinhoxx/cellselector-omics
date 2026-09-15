@@ -1,6 +1,6 @@
 import pytest
 import pandas as pd
-from models.classical.ranker import rank, explain
+from src.models.classical.ranker import rank, explain
 
 class TestRank:
     """Test the main ranking function."""
@@ -71,4 +71,5 @@ class TestRank:
             explanation = explain(result.iloc[0])
             name = result.iloc[0]["official_name"]
             assert name in explanation
+
 

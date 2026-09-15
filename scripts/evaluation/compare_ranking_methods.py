@@ -5,10 +5,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 import numpy as np
 
-from models.classical.scorer import load_mappings, rank_sort
-from models.classical.weights_learned import VALIDATION_SET, _build_name_to_cvcl, _precompute_scores
-from models.classical.rrf_ranker import compute_rrf_score
-from models.classical.lambdamart_ranker import (
+from src.models.classical.scorer import load_mappings, rank_sort
+from src.models.classical.weights_learned import VALIDATION_SET, _build_name_to_cvcl, _precompute_scores
+from src.models.classical.rrf_ranker import compute_rrf_score
+from src.models.classical.lambdamart_ranker import (
     build_training_data, train_lambdamart, score_with_lambdamart, FEATURE_COLUMNS
 )
 from scripts.evaluation.cross_validated_evaluation import RESULTS_PATH
@@ -313,3 +313,4 @@ def run_comparison():
 
 if __name__ == "__main__":
     run_comparison()
+

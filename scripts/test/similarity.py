@@ -1,8 +1,8 @@
 import pytest
 import pandas as pd
-from models.classical.similarity import find_alternatives
-from models.classical.ranker import rank
-from config import MASTER_MERGED
+from src.models.classical.similarity import find_alternatives
+from src.models.classical.ranker import rank
+from config.config import MASTER_MERGED
 
 class TestFindAlternatives:
     """Test similarity-based alternative recommendations."""
@@ -33,3 +33,4 @@ class TestFindAlternatives:
         for cvcl, alts in result.items():
             for alt in alts:
                 assert alt["cellosaurus_id"] != cvcl
+
