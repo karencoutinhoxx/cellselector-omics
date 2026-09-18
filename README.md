@@ -7,9 +7,10 @@
 *A decision-support framework that reconciles fragmented public omics resources into a single, evidence-weighted, and interpretable recommendation for experimental cell line selection.*
 
 **University of Bristol · MSc Data Science Group Project · Team 26**
+<br>
 **Conducted in partnership with AstraZeneca**
 
-[Live site](https://cellselectoromics.com) · [Repository](https://github.com/karencoutinhoxx/cellselector-omics)
+[Live site](https://cellselectoromics.com)
 
 </div>
 
