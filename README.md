@@ -2,7 +2,7 @@
 
 # CellSelector Omics
 
-### A Multi-Omics Recommendation System for Human Cell Line Selection
+### A Multi-Omics Recommendation System for Cell Line Selection
 
 *A decision-support framework that reconciles fragmented public omics resources into a single, evidence-weighted, and interpretable recommendation for experimental cell line selection.*
 
