@@ -9,7 +9,7 @@
 **University of Bristol · MSc Data Science Group Project · Team 26**
 **Conducted in partnership with AstraZeneca**
 
-             [Live site](https://cellselectoromics.com) 
+            [Live site](https://cellselectoromics.com) · [Repository](https://github.com/karencoutinhoxx/cellselector-omics)
 
 </div>
 
